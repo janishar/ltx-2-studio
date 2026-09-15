@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bump version in all 4 pyproject.toml files of the ltx-2-mlx workspace.
+"""Bump version in all 4 pyproject.toml files of the ltx-2-studio workspace.
 
 Usage:
     python scripts/bump_version.py 0.2.0

@@ -1,5 +1,5 @@
 [project]
-name = "ltx-2-mlx"
+name = "ltx-2-studio"
 version = "0.15.4"
 description = "Pure MLX port of LTX-2 for Apple Silicon — inference, pipelines, and training"
 readme = "README.md"
@@ -31,11 +31,11 @@ dev = [
     "ruff>=0.7.0",
     "ty>=0.0.0a1",
 ]
-all = ["ltx-2-mlx[trainer,dev]"]
+all = ["ltx-2-studio[trainer,dev]"]
 
 [project.urls]
-Homepage = "https://github.com/janishar/ltx-2-mlx"
-Repository = "https://github.com/janishar/ltx-2-mlx"
+Homepage = "https://github.com/janishar/ltx-2-studio"
+Repository = "https://github.com/janishar/ltx-2-studio"
 
 [tool.uv.workspace]
 members = ["packages/*"]

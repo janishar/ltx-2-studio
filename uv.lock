@@ -4,7 +4,7 @@ requires-python = ">=3.11"
 
 [manifest]
 members = [
-    "ltx-2-mlx",
+    "ltx-2-studio",
     "ltx-core-mlx",
     "ltx-pipelines-mlx",
     "ltx-trainer-mlx",
@@ -426,7 +426,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ltx-2-mlx"
+name = "ltx-2-studio"
 version = "0.15.4"
 source = { virtual = "." }
 dependencies = [
@@ -454,7 +454,7 @@ trainer = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ltx-2-mlx", extras = ["trainer", "dev"], marker = "extra == 'all'" },
+    { name = "ltx-2-studio", extras = ["trainer", "dev"], marker = "extra == 'all'" },
     { name = "ltx-core-mlx", editable = "packages/ltx-core-mlx" },
     { name = "ltx-pipelines-mlx", editable = "packages/ltx-pipelines-mlx" },
     { name = "ltx-trainer-mlx", marker = "extra == 'trainer'", editable = "packages/ltx-trainer" },

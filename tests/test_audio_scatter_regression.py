@@ -37,7 +37,7 @@ def test_mlx_strided_scatter_add_canary():
     """Framework guard for the mlx 0.31.2 Metal scatter regression (issue #34).
 
     ``at[<strided slice>].add()`` mis-indexes the source on Metal in mlx
-    0.31.2 (ml-explore/mlx#3477, fixed by #3483 but unreleased). ltx-2-mlx no
+    0.31.2 (ml-explore/mlx#3477, fixed by #3483 but unreleased). ltx-2-studio no
     longer relies on this op in the audio path (see the UpSample1d /
     HannSincResampler tests), so a broken backend does NOT break our output —
     this canary therefore SKIPS with a diagnostic rather than failing the suite
@@ -48,7 +48,7 @@ def test_mlx_strided_scatter_add_canary():
         pytest.skip(
             f"active mlx backend has the known strided-scatter bug "
             f"({wrong} wrong elements; issue #34 / ml-explore/mlx#3477). "
-            "ltx-2-mlx works around it; upgrade mlx when a fix ships."
+            "ltx-2-studio works around it; upgrade mlx when a fix ships."
         )
     assert wrong == 0
 

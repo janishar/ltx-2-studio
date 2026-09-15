@@ -1,4 +1,4 @@
-"""Shared utilities for ltx-2-mlx."""
+"""Shared utilities for ltx-2-studio."""
 
 from ltx_core_mlx.utils.memory import aggressive_cleanup, get_memory_stats
 

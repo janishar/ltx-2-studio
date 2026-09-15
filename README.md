@@ -1,9 +1,9 @@
-# ltx-2-mlx
+# ltx-2-studio
 
 **LTX-2 video + audio generation on Apple Silicon, natively on MLX — with a
 local web studio.**
 
-ltx-2-mlx runs [Lightricks LTX-2](https://github.com/Lightricks/LTX-2)
+ltx-2-studio runs [Lightricks LTX-2](https://github.com/Lightricks/LTX-2)
 (LTX-2.3 and LTX-2.5) on Metal through MLX: text, image, audio and video to
 video with synchronized stereo audio, retake/extend, keyframes, IC-LoRA
 control, prompt beats and LoRA training. It loads the **official Lightricks
@@ -32,7 +32,7 @@ weights to int8 on the GPU and runs the model natively on Metal.
 On a MacBook Pro M5 Pro with 64 GB, the same 49-frame 704×448 distilled
 generation (same prompt, seed and settings):
 
-| | LTX-2 (PyTorch, MPS) · bf16 | ltx-2-mlx · int8 on load |
+| | LTX-2 (PyTorch, MPS) · bf16 | ltx-2-studio · int8 on load |
 | --- | --- | --- |
 | Total time | 142.0 s | **39.9 s** |
 | Peak memory | 43.7 GB footprint | **20.9 GiB** MLX peak |
@@ -87,8 +87,8 @@ instead of hand-built command lines.
 ## Installation
 
 ```bash
-git clone https://github.com/janishar/ltx-2-mlx.git
-cd ltx-2-mlx
+git clone https://github.com/janishar/ltx-2-studio.git
+cd ltx-2-studio
 uv sync --all-extras
 ```
 
@@ -97,7 +97,7 @@ This installs three workspace packages (`ltx-core-mlx`, `ltx-pipelines-mlx`,
 
 ## Downloading the weights
 
-ltx-2-mlx does not ship weights. Review the model license on
+ltx-2-studio does not ship weights. Review the model license on
 [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5), accept its
 terms on Hugging Face, and log in with a read token.
 
@@ -451,7 +451,7 @@ animated in-progress previews. Run `ltx-2-mlx <command> --help` for defaults.
 ## Contributing
 
 Contributions are welcome — bug reports, feature requests and pull requests on
-[github.com/janishar/ltx-2-mlx](https://github.com/janishar/ltx-2-mlx).
+[github.com/janishar/ltx-2-studio](https://github.com/janishar/ltx-2-studio).
 
 - Run the fast suite with `uv run pytest -m "not slow"` and lint with
   `uv run ruff check . && uv run ruff format --check .`.

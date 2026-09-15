@@ -483,7 +483,7 @@ def _default_cache_root() -> Path:
     for parent in Path(__file__).resolve().parents:
         if (parent / "uv.lock").exists() and (parent / "packages").is_dir():
             return parent / ".cache" / "virtual-packs"
-    return Path.home() / ".cache" / "ltx-2-mlx" / "virtual-packs"
+    return Path.home() / ".cache" / "ltx-2-studio" / "virtual-packs"
 
 
 def _sidecar_name(sources: OfficialSources, bits: int | None) -> str:

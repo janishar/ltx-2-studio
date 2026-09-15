@@ -1,4 +1,4 @@
-# CLAUDE.md — ltx-2-mlx
+# CLAUDE.md — ltx-2-studio
 
 ## Project Overview
 
@@ -8,7 +8,7 @@ Pure MLX port of [LTX-2](https://github.com/Lightricks/LTX-2/) (Lightricks) for 
 - **ltx-pipelines-mlx** (`ltx_pipelines_mlx`) — generation pipelines: T2V, I2V, retake, extend, keyframe, IC-LoRA, two-stage
 - **ltx-trainer** (`ltx_trainer_mlx`) - ltx-2 training, democratized.
 
-Standalone fork: https://github.com/janishar/ltx-2-mlx. Loads the **official Lightricks LTX-2.5 files** directly (converted and quantized in memory, see Critical Rule 4) or MLX-converted packs (mlx-forge layout) for LTX-2.3 / LTX-2.5. There is no built-in default model: `--model` or `$LTX_MODEL`.
+Standalone fork: https://github.com/janishar/ltx-2-studio. Loads the **official Lightricks LTX-2.5 files** directly (converted and quantized in memory, see Critical Rule 4) or MLX-converted packs (mlx-forge layout) for LTX-2.3 / LTX-2.5. There is no built-in default model: `--model` or `$LTX_MODEL`.
 
 Fork additions on top of the port:
 
@@ -1219,4 +1219,4 @@ scripts in `tests/parity_keyframe/` also use `LTX_REFERENCE_DIR`,
 - **ltx-pipelines**: [GitHub](https://github.com/Lightricks/LTX-2/tree/main/packages/ltx-pipelines)
 - **MLX**: [Docs](https://ml-explore.github.io/mlx/) · [GitHub](https://github.com/ml-explore/mlx)
 - **Official LTX-2.5 weights**: [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5)
-- **This fork**: [janishar/ltx-2-mlx](https://github.com/janishar/ltx-2-mlx)
+- **This fork**: [janishar/ltx-2-studio](https://github.com/janishar/ltx-2-studio)

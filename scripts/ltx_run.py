@@ -164,7 +164,7 @@ def mode_availability(info: ModelInfo, mode: str, pipeline: str = "distilled") -
     if mode in DEV_MODES and not info.has_dev:
         return info.missing_dev_reason()
     if mode in IC_LORA_MODES and info.is_25:
-        return "IC-LoRA modes run on LTX-2.3 packs only in ltx-2-mlx"
+        return "IC-LoRA modes run on LTX-2.3 packs only in ltx-2-studio"
     return None
 
 

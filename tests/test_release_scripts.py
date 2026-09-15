@@ -23,7 +23,7 @@ def _make_workspace(tmp_path: Path) -> Path:
 
     root_toml = textwrap.dedent("""\
         [project]
-        name = "ltx-2-mlx"
+        name = "ltx-2-studio"
         version = "0.1.0"
         description = "x"
         """)
@@ -95,7 +95,7 @@ def test_bump_version_handles_indented_version_line(tmp_path):
     workspace = _make_workspace(tmp_path)
     indented = textwrap.dedent("""\
         [project]
-          name = "ltx-2-mlx"
+          name = "ltx-2-studio"
           version = "0.1.0"
           description = "x"
         """)

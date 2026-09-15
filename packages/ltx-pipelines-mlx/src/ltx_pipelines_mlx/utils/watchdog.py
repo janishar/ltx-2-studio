@@ -24,7 +24,7 @@ is active — a known macOS 26.x + MLX 0.31.x regression, tracked upstream at
 https://github.com/ml-explore/mlx/issues/3267 (runs on the same machines were
 green on MLX 0.30).
 
-Known mitigations (pick one, ltx-2-mlx never sets these for you):
+Known mitigations (pick one, ltx-2-studio never sets these for you):
   * relaunch with AGX_RELAX_CDM_CTXSTORE_TIMEOUT=1 — relaxes the watchdog
     timeout for THIS process only; the GPU may feel less responsive for the
     UI while the run is active, and on some machines it is not sufficient;
