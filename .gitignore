@@ -34,6 +34,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .claude/
+Claude outputs
 
 # Local benchmark / regression test artifacts
 regression_tests/
