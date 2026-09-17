@@ -107,10 +107,6 @@ function isTyping(target) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
 
-function safeStorage(fn, fallback) {
-  try { return fn(); } catch (e) { return fallback; }
-}
-
 /** Close every open ⋮ / ⋯ / history menu except `except`. */
 function closePopmenus(except = null) {
   document.querySelectorAll(".popmenu").forEach((menu) => { if (menu !== except) menu.hidden = true; });

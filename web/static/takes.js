@@ -80,13 +80,13 @@ function renderScrub() {
   const m = name.match(/_s(\d+)_step(\d+)of(\d+)\.webp$/) || name.match(/_step(\d+)of(\d+)\.webp$/);
   const info = m && m.length === 4 ? { stage: Number(m[1]), step: Number(m[2]), total: Number(m[3]) }
     : m ? { stage: 0, step: Number(m[1]), total: Number(m[2]) } : { stage: 0, step: 0, total: 0 };
-  showPreviewImage(`/sfile/${path}`, previewLabel(info));
+  showPreviewImage(`/stage/${path}`, previewLabel(info));
   $("previewScrub").hidden = false;
   $("previewScrubLabel").textContent = `${index + 1}/${S.scrub.list.length}`;
   setCaption(`${S.scrub.take.name} · previews · ${name}`);
 }
 
-/** Play a take or combined video in the viewer, or clear it when item is null. */
+/** Play a take or an exported sequence in the viewer, or clear it when item is null. */
 function showInViewer(item, caption = "", autoplay = false) {
   closeCompare();
   hidePreview();
@@ -156,7 +156,7 @@ function opButton(text, title, fn, cls = "ghost") {
 }
 
 function downloadLink(url, name) {
-  return el("a", { class: "menu-link", role: "menuitem", href: `${url}?download=1`, download: name, text: "Download",
+  return el("a", { class: "menu-link", role: "menuitem", href: url, download: name, text: "Download",
     onclick: (e) => { e.stopPropagation(); closePopmenus(); } });
 }
 
@@ -385,27 +385,25 @@ function noteBatchJob(job) {
   }).finally(() => { S.batchOpening = false; });
 }
 
-// ── timeline list (combined videos) ──────────────────────────────────────
+// ── timeline list (sequences exported from helmstudio's timeline) ────────
 
-async function loadTimeline(selectName = null) {
+async function loadTimeline() {
   S.timeline = await api(`/api/timeline?session=${encodeURIComponent(S.session)}`);
   renderTimelineList();
-  if (selectName) selectTimeline(selectName);
 }
 
 function timelineMeta(t) {
   const p = t.probe || {};
   const bits = [];
-  if (t.clips) bits.push(`${t.clips.length} clip${t.clips.length === 1 ? "" : "s"}`);
   if (p.width) bits.push(`${p.width}×${p.height}`);
   if (p.duration) bits.push(`${p.duration.toFixed(1)}s`);
-  return bits.join(" · ") || "combined";
+  return bits.join(" · ") || "sequence";
 }
 
 function renderTimelineList() {
   $("timelineCount").textContent = S.timeline.length ? String(S.timeline.length) : "";
   if (!S.timeline.length) {
-    $("timelineList").replaceChildren(el("li", { class: "list-empty", text: "No combined videos yet. Use Create Timeline above to build one." }));
+    $("timelineList").replaceChildren(el("li", { class: "list-empty", text: "No sequences yet. Create Timeline above makes one." }));
     return;
   }
   $("timelineList").replaceChildren(...S.timeline.map((t) => el("li", {
@@ -414,14 +412,14 @@ function renderTimelineList() {
     el("div", { class: "row" },
       el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
       el("div", { class: "info" },
-        el("div", { class: "nm", text: t.name, title: (t.clips || []).join("\n") || t.name }),
+        el("div", { class: "nm", text: t.name, title: t.name }),
         el("div", { class: "meta", text: timelineMeta(t) }))),
     el("div", { class: "ops" },
-      opButton("Use video", "Copy this combined video into inputs (retake, extend, control)", () => useVideo(t.name, "timeline")),
+      opButton("Use video", "Use this sequence as an input (retake, extend, control)", () => useVideo(t.name, "timeline")),
       popmenu("⋮", "More actions", [
         downloadLink(t.url, t.name),
-        menuItem("Delete…", "Delete this combined video", async () => {
-          if (!confirm(`Permanently delete this combined video?\n${t.name}\n\nThe source clips are kept. This cannot be undone.`)) return;
+        menuItem("Delete…", "Delete this exported sequence", async () => {
+          if (!confirm(`Delete this exported sequence?\n${t.name}\n\nThe sequence and its clips stay on helmstudio's timeline.`)) return;
           await api("/api/timeline/delete", { session: S.session, name: t.name });
           if (S.selectedTimeline === t.name) showInViewer(null);
           await loadTimeline();
@@ -435,6 +433,6 @@ function selectTimeline(name) {
   S.selectedTimeline = item ? name : null;
   S.selectedTake = null;
   if (!item) return showInViewer(null);
-  showInViewer(item, [item.name, timelineMeta(item), ...(item.clips || []).map((c, i) => `${i + 1}. ${c}`)].join("  ·  "), true);
+  showInViewer(item, [item.name, timelineMeta(item)].join("  ·  "), true);
   renderRunningFromQueue();
 }

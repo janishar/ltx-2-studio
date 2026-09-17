@@ -80,7 +80,10 @@ instead of hand-built command lines.
 
 - **Python 3.11+** and **[uv](https://docs.astral.sh/uv/)**.
 - **FFmpeg and FFprobe on `PATH`** — video encoding, and in the web studio
-  thumbnails, frame/audio extraction and the timeline. `brew install ffmpeg`.
+  media probing and frame/audio extraction. `brew install ffmpeg`.
+- **[helmstudio](https://github.com/janishar/helmstudio)** for the web studio,
+  which keeps everything through helmstudio's runtime SDK: helmstudio itself,
+  or its `helm` CLI to run the studio on its own.
 - **Hugging Face CLI** (`hf`, installed with the dependencies) to download
   weights.
 
@@ -148,42 +151,14 @@ default model, so pass `--model` or set `LTX_MODEL`.
 ### Web studio
 
 ```bash
-bash web/run.sh --model ./models/ltx-2.5
+HELMSTUDIO_REPO=~/helmstudio LTX_MODEL=./models/ltx-2.5 bash web/run.sh
 ```
 
-Open http://127.0.0.1:8720. The server is Python stdlib only — no extra
-dependencies, no frontend build step.
-
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--model` | `$LTX_MODEL` | Model directory or Hugging Face repo. Also changeable from the **Model** button. |
-| `--gemma` | `$LTX_GEMMA` | Gemma 3 repo for LTX-2.3 packs and prompt enhancement. |
-| `--host` | `127.0.0.1` | Bind address. |
-| `--port` | `8720` | Bind port. |
-
+Open http://127.0.0.1:8720. `web/run.sh` runs the studio under helmstudio's
+`helm dev`; helmstudio can also start it from `helmstudio.yaml`.
 **There is no authentication** — see [Limits](#limits) before binding to
-anything other than `127.0.0.1`.
-
-#### Run from VS Code
-
-`.vscode/launch.json` ships ready-made configurations for the Python Debugger
-(`Cmd+Shift+D`, pick one, `F5`), using the repo's `.venv` interpreter:
-
-| Configuration | What it does |
-| --- | --- |
-| **ltx studio (dev)** | Runs the studio on `127.0.0.1:8720` — the everyday config. Front-end edits only need a browser refresh. |
-| **ltx studio (custom paths)** | Prompts for model, Gemma repo and port. |
-| **ltx studio (debug - step into ltx packages)** | `justMyCode: false`, to step into `ltx_core_mlx` / `ltx_pipelines_mlx`. |
-| **ltx studio (LAN - 0.0.0.0, no auth)** | Binds to all interfaces. |
-| **ltx-run: modes** | Prints which tasks a model supports. |
-| **ltx-2-mlx: generate (prompt)** | One distilled generation in-process under the debugger. |
-| **pytest: fast suite** | The test suite under the debugger. |
-
-Configurations other than "custom paths" have a sample `--model` path — edit
-it in `.vscode/launch.json`. `.vscode/tasks.json` adds **run: ltx studio**,
-**setup: uv sync**, **test: fast suite** and **lint: ruff**.
-
-See [web/README.md](web/README.md) for the full studio guide.
+anything other than `127.0.0.1`. [web/README.md](web/README.md) is the full
+studio guide: running it, VS Code, and where everything is kept.
 
 ### Command line
 
@@ -308,11 +283,9 @@ command:
 - **Use video** and **Use audio** bring the clip or its soundtrack back in as
   inputs for retake, extend, control or audio → video.
 
-**Timeline.** **Create Timeline** opens a full-screen editor: browse clips
-across every session, click to queue (repeats allowed), drag to reorder, and
-**Combine**. Clips are letterboxed onto the largest size, resampled to 24 fps,
-and silent clips get silence so the soundtrack stays continuous. Results land
-in the session's `timeline/` with a sidecar listing the source clips.
+**Timeline.** **Create Timeline** opens helmstudio's timeline: pick takes from
+the gallery, reorder, trim, dissolve, set gain and undo, then export; the
+export can come back in as an input.
 
 **Live preview (optional).** Tick **Live preview** under the Render button and
 the studio streams short animated WebP previews into the viewer while the model
@@ -332,21 +305,10 @@ attention for long or HD clips.
 
 ## Sessions and state
 
-A studio session is just a directory:
-
-```
-web/sessions/<name>/
-├── setting.json   # task, prompt and every form value — saved as you edit
-├── inputs/        # uploads, extracted frames/audio, takes reused as inputs
-├── outputs/       # rendered takes (.mp4) with a .json sidecar: params, argv, probe
-├── previews/      # live-preview WebPs, one folder per render, deleted with its take
-└── timeline/      # combined videos with a .json sidecar listing source clips
-```
-
-Renders only read references from `inputs/`; anything pulled back from a take
-is copied there first. Switch, create, duplicate or delete sessions from the
-top bar — the last active session reopens on start. `web/sessions/` is
-git-ignored.
+The studio keeps nothing of its own. Sessions and their settings, inputs,
+takes, render logs, preferences and sequences are kept by helmstudio through
+its runtime SDK — see
+[web/README.md](web/README.md#where-things-are-kept).
 
 ## Performance notes
 
@@ -430,7 +392,7 @@ animated in-progress previews. Run `ltx-2-mlx <command> --help` for defaults.
 
 ### Environment variables
 
-- `LTX_MODEL` / `LTX_GEMMA` — default `--model` / `--gemma` for the CLI, the studio and the mode launcher. There is no built-in default model.
+- `LTX_MODEL` / `LTX_GEMMA` — default `--model` / `--gemma` for the CLI and the mode launcher; `web/run.sh` links the studio's weights from `LTX_MODEL`. There is no built-in default model.
 - `LTX_MLX_QUANTIZE_ON_LOAD` — `8` | `4` | `none` for official weights (set by `--quantize-on-load`).
 - `LTX_MLX_CACHE_DIR` — where virtual packs for official weights are cached (default `<repo>/.cache/virtual-packs`).
 - `LTX2_GEMMA_EVAL_EVERY=N` / `LTX2_DIT_EVAL_EVERY=N` — `mx.eval` cadence that keeps Metal command buffers under the macOS GPU watchdog (defaults `1` / `8`; `0` disables).
@@ -445,8 +407,8 @@ animated in-progress previews. Run `ltx-2-mlx <command> --help` for defaults.
   needs a converted pack.
 - The IC-LoRA family, prompt enhancement and TeaCache need LTX-2.3 packs.
 - The studio binds to `127.0.0.1` by default and has **no authentication** —
-  anyone who can reach the port can run jobs and read session files. Don't
-  expose it on an untrusted network.
+  anyone who can reach the port can run jobs and read what helmstudio keeps
+  for it. Don't expose it on an untrusted network.
 
 ## Contributing
 
@@ -458,8 +420,9 @@ Contributions are welcome — bug reports, feature requests and pull requests on
 - Weight-gated tests skip unless `LTX_TEST_MODEL_DIR` (LTX-2.3 int8 pack) or
   `LTX_TEST_LTX25_PACK_DIR` (LTX-2.5 int8 pack) point at local packs;
   `LTX25_OFFICIAL_DIR` enables the official-weights loader tests.
-- Keep the web studio dependency-free: stdlib Python server, vanilla JS, no
-  build step. New tasks go in `web/static/tasks.js`.
+- The web studio keeps everything through helmstudio's runtime SDK, its one
+  dependency: stdlib Python server, vanilla JS, no build step. New tasks go in
+  `web/static/tasks.js`.
 - Use conventional commit messages (`feat:`, `fix:`, `docs:`, `chore:`).
 - Releases are manual: `scripts/bump_version.py X.Y.Z`, add the
   `CHANGELOG.md` entry, then tag `vX.Y.Z`.

@@ -4,16 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ltx studio</title>
+<!-- helm-css's tokens, this studio's hue for each theme, and the Plex faces, through the proxy -->
+<link rel="stylesheet" href="/helm/sdk/v1/helm-tokens.css">
+<link rel="stylesheet" href="/helm/accent.css">
 <link rel="stylesheet" href="/static/style.css">
-<script>
-// Apply the saved theme before first paint.
-(function () {
-  try {
-    const saved = localStorage.getItem("ltxstudio-theme");
-    if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved;
-  } catch (e) {}
-})();
-</script>
 </head>
 <body>
 
@@ -32,14 +26,10 @@
     </div>
   </div>
   <div class="barright">
+    <button class="pathbutton" id="helmGalleryButton" type="button" hidden>Gallery</button>
     <button class="pathbutton" id="timelineButton" type="button">Create Timeline</button>
     <button class="pathbutton" id="modelButton" type="button"><i class="dot" id="modelDot"></i><span id="modelButtonText">Model</span></button>
     <button class="pathbutton icon" id="notifyButton" type="button" aria-pressed="false" title="Notify me when a render finishes">🔔</button>
-    <div class="modeswitch themeswitch" id="themeSwitch" role="radiogroup" aria-label="Theme">
-      <button data-theme="system" class="on" type="button" title="Match system">🖥</button>
-      <button data-theme="light" type="button" title="Light">☀</button>
-      <button data-theme="dark" type="button" title="Dark">🌙</button>
-    </div>
     <div class="lamp" id="lamp"><i></i><span id="lampText">idle</span></div>
   </div>
 </header>
@@ -238,14 +228,8 @@
 
     <div class="console" id="consoleContainer">
       <div class="resize-handle" id="resizeHandle" title="Drag to resize the terminal"></div>
-      <div class="conhead">
-        <h2>Terminal</h2>
-        <div class="tabs">
-          <label class="check inline"><input type="checkbox" id="followLog" checked> follow</label>
-          <button class="ghost sm" id="clearLog" type="button">Clear</button>
-        </div>
-      </div>
-      <pre id="terminalOutput"></pre>
+      <!-- The log of the session's latest render, streamed from helmstudio (helm-ui-sdk). -->
+      <helm-terminal id="terminal" follow></helm-terminal>
     </div>
   </section>
 
@@ -305,56 +289,6 @@
       <span class="spacer"></span>
       <button class="ghost" id="cancelModel" type="button">Close</button>
       <button class="go" id="saveModel" type="button">Use model</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal fullscreen" id="timelineModal" hidden>
-  <div class="timeline-editor" role="dialog" aria-modal="true" aria-labelledby="timelineModalTitle">
-    <div class="timeline-header">
-      <h2 id="timelineModalTitle">Combine videos</h2>
-      <div class="timeline-headcrumb" id="timelineBreadcrumb"></div>
-      <button class="ghost sm timeline-back" id="closeTimeline" type="button">← Back</button>
-    </div>
-
-    <div class="timeline-editor-body">
-      <div class="timeline-browser">
-        <div class="timeline-dropzone">
-          <p>Browse sessions below — click a clip to add it to the queue (a clip can be added more than once)</p>
-        </div>
-        <div class="timeline-browser-list" id="timelineBrowserList"></div>
-      </div>
-
-      <div class="timeline-queue">
-        <div class="timeline-queue-head">
-          <h3>Queue <span class="count" id="timelineQueueTotal"></span></h3>
-          <button class="ghost sm" id="clearTimeline" type="button">Clear</button>
-        </div>
-        <div class="timeline-preview">
-          <div class="timeline-placeholder" id="timelinePlaceholder">
-            <p>No clips yet — pick videos on the left to build the queue</p>
-          </div>
-          <div class="timeline-track" id="timelineTrack"></div>
-        </div>
-      </div>
-
-      <div class="timeline-review">
-        <h3>Combined result</h3>
-        <div class="timeline-review-player">
-          <video id="timelineReviewVideo" controls playsinline></video>
-          <div class="timeline-review-empty" id="timelineReviewEmpty">
-            <p>Combine the queued clips to review the result here.</p>
-          </div>
-        </div>
-        <div class="timeline-actions">
-          <label class="timeline-name">Output name
-            <input type="text" id="timelineOutputName" placeholder="timeline-01" autocomplete="off">
-          </label>
-          <button class="go sm" id="renderTimeline" type="button" disabled>Combine</button>
-        </div>
-        <span class="hint" id="timelineRenderStatus"></span>
-        <p class="hint">Clips are letterboxed onto the largest size, resampled to 24 fps, and silent clips get a silent audio track. Sources are never modified.</p>
-      </div>
     </div>
   </div>
 </div>

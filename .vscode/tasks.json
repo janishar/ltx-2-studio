@@ -3,18 +3,60 @@
   "tasks": [
     {
       "label": "run: ltx studio",
+      "detail": "web/run.sh: under helm dev, which keeps everything ltx studio keeps in .helm/",
       "type": "shell",
       "command": "bash",
-      "args": ["web/run.sh", "--model", "/Users/janisharali/GenAI/ltx/models/ltx-2.5", "--port", "8720"],
-      "options": { "cwd": "${workspaceFolder}" },
+      "args": ["web/run.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "HELMSTUDIO_REPO": "/Users/janisharali/GenAI/helmstudio",
+          "LTX_MODEL": "/Users/janisharali/GenAI/ltx/models/ltx-2.5"
+        }
+      },
       "isBackground": true,
       "problemMatcher": []
     },
     {
+      "label": "debug: ltx studio",
+      "detail": "web/run.sh with LTX_DEBUGPY: the studio listens for the debugger on 127.0.0.1:5678, and the ltx studio launch attaches",
+      "type": "shell",
+      "command": "bash",
+      "args": ["web/run.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "HELMSTUDIO_REPO": "/Users/janisharali/GenAI/helmstudio",
+          "LTX_MODEL": "/Users/janisharali/GenAI/ltx/models/ltx-2.5",
+          "LTX_DEBUGPY": "5678"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "ltx-studio",
+        "pattern": { "regexp": "^ltx studio problem: (.*):(\\d+): (.*)$", "file": 1, "line": 2, "message": 3 },
+        "background": {
+          "activeBegins": true,
+          "beginsPattern": "^(helm|helm-runtime-sdk|weights|debugpy|helm dev):",
+          "endsPattern": "ltx studio on http://"
+        }
+      }
+    },
+    {
+      "label": "stop: ltx studio",
+      "detail": "web/run.sh stop: ends the helm dev web/run.sh started, which stops the studio",
+      "type": "shell",
+      "command": "bash",
+      "args": ["web/run.sh", "stop"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "setup: uv sync",
+      "detail": "--inexact keeps helm-runtime-sdk, which is not in uv.lock",
       "type": "shell",
       "command": "uv",
-      "args": ["sync", "--all-extras"],
+      "args": ["sync", "--all-extras", "--inexact"],
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },

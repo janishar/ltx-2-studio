@@ -22,13 +22,13 @@
     "**/.venv/**": true,
     "**/.cache/**": true,
     "**/outputs/**": true,
-    "**/web/sessions/**": true,
+    "**/.helm/**": true,
     "**/.git/objects/**": true
   },
   "search.exclude": {
     "**/.venv": true,
     "**/.cache": true,
     "**/outputs": true,
-    "**/web/sessions": true
+    "**/.helm": true
   }
 }

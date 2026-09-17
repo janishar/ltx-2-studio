@@ -14,7 +14,7 @@ Fork additions on top of the port:
 
 - `ltx_core_mlx/loader/official_pack.py` — official-weights virtual packs (`--quantize-on-load {8,4,none}`)
 - `scripts/ltx_run.py` — mode launcher with a model capability check
-- `web/` — **ltx studio**, stdlib-only local web UI (sessions, queue, takes, timeline, optional live preview); see `web/README.md`
+- `web/` — **ltx studio**, local web UI (sessions, queue, takes, timeline, optional live preview) that keeps everything through helmstudio's runtime SDK and runs under helmstudio or `helm dev`; see `web/README.md`
 - `.vscode/` — launch / tasks / settings
 
 ---
@@ -1209,7 +1209,7 @@ scripts in `tests/parity_keyframe/` also use `LTX_REFERENCE_DIR`,
   `commitlint` in CI.
 - Package imports: `ltx_core_mlx.*` for core, `ltx_pipelines_mlx.*` for pipelines.
 - One branch = one concern (see Release Process above).
-- ltx studio stays dependency-free: stdlib Python server, vanilla JS, no build step.
+- ltx studio's one dependency is helmstudio's runtime SDK (`helm-runtime-sdk`, itself stdlib-only), and it keeps everything through it: no store of its own, no files outside the directories helmstudio gives it, no browser storage. Otherwise a stdlib Python server, vanilla JS, no build step.
 
 ---
 

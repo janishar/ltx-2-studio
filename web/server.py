@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """ltx studio — a local web control surface for every ``ltx-2-mlx`` command.
 
-Stdlib only (no FastAPI/uvicorn), so it runs in the repo's existing uv
-environment. Each render spawns ``python -m ltx_pipelines_mlx <subcommand>``
-with an argv built from the browser form; one job runs at a time (one GPU) and
-the rest wait in a queue. Logs and progress stream to the browser over SSE.
+No web framework (no FastAPI/uvicorn), so it runs in the repo's existing uv
+environment with helmstudio's runtime SDK. Each render spawns
+``python -m ltx_pipelines_mlx <subcommand>`` with an argv built from the browser
+form; one job runs at a time (one GPU) and the rest wait in a queue. Progress
+streams to the browser over SSE; each render's log goes to helmstudio, whose
+helm-terminal the page streams it with.
 
-Sessions are plain directories:
-
-    web/sessions/<name>/
-        setting.json   UI state, saved while you edit
-        inputs/        uploads and media pulled back from takes
-        outputs/       rendered .mp4 takes, each with a .json sidecar
-        previews/      optional live-preview clips per render (animated WebP per step)
-        timeline/      combined videos from the timeline editor, each with a .json sidecar
+ltx studio keeps nothing of its own. ``State`` keeps and reads everything
+through helmstudio's runtime SDK, and writes files only where helmstudio says;
+web/README.md, "Where things are kept", lists where each thing goes. That holds
+on its own too: a Python studio runs standalone under ``helm dev``, whose
+provider keeps the same things in ``./.helm/`` (helmstudio's
+docs/design/07-platform-services.md §8), so :func:`connect` refuses to start
+without one. The SDK's same-origin proxy is mounted at ``/helm/``, through
+which the page reaches helm-css, the browser runtime and components, the
+studio's hue, the theme and the assets without ever holding the token.
 
 Usage:
-    uv run python web/server.py --model /path/to/model [--port 8720] [--host 127.0.0.1]
+    helm dev -f helmstudio.yaml -venv .venv -link ltx=/path/to/LTX-2.5    (see web/run.sh)
 """
 
 from __future__ import annotations
@@ -37,17 +40,25 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, ClassVar
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from typing import Any, BinaryIO, ClassVar
+from urllib.parse import parse_qs, unquote, urlparse
+
+try:
+    from helm_runtime_sdk import HelmError, from_env
+    from helm_runtime_sdk.proxy import PREFIX, Proxy
+except ImportError:  # connect() says what is missing; the tests stand in for the SDK
+    HelmError = Exception
+    from_env = None
+    PREFIX = "/helm/"
+    Proxy = None
 
 WEB_DIR = Path(__file__).resolve().parent
 REPO_ROOT = WEB_DIR.parent
 STATIC_DIR = WEB_DIR / "static"
-SESSIONS_DIR = WEB_DIR / "sessions"
 
 #: Subcommands the UI may run, and which of them take --model / --gemma / --quantize-on-load.
 ALLOWED_COMMANDS = {
@@ -62,23 +73,20 @@ SERVER_OWNED_FLAGS = {"--output", "-o", "--model", "-m", "--gemma", "--quantize-
 STEPWISE_COMMANDS = {"generate", "a2v", "retake", "extend", "keyframe", "ic-lora", "hdr-ic-lora", "lipdub"}
 PREVIEW_NAME = re.compile(r"^seed_-?\d+(?:_s(\d+))?_step(\d+)of(\d+)\.webp$")
 
-MEDIA_KINDS = {"inputs", "outputs", "timeline"}
-VIDEO_EXTS = {".mp4", ".mov"}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
-TERMINAL_LOG = "terminal.log"
-TERMINAL_LOG_MAX_BYTES = 2 << 20
 
 
-def _load_launcher():
-    """Reuse scripts/ltx_run.py's model inspection (filesystem only)."""
-    spec = importlib.util.spec_from_file_location("ltx_run", REPO_ROOT / "scripts" / "ltx_run.py")
+def _load(name: str, path: Path):
+    """Import a module from its file, whether this server runs as a script or is loaded by the tests."""
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    sys.modules["ltx_run"] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
 
 
-LTX_RUN = _load_launcher()
+#: scripts/ltx_run.py, for its model inspection (filesystem only).
+LTX_RUN = _load("ltx_run", REPO_ROOT / "scripts" / "ltx_run.py")
 
 
 # ---------------------------------------------------------------------------
@@ -93,19 +101,6 @@ def now_iso() -> str:
 def safe_name(text: str, default: str = "untitled") -> str:
     cleaned = SAFE_NAME.sub("-", text.strip()).strip(".-")
     return cleaned[:80] or default
-
-
-def read_json(path: Path, default: Any) -> Any:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
-def write_json(path: Path, obj: Any) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2))
-    tmp.replace(path)
 
 
 def which(tool: str) -> str | None:
@@ -139,33 +134,6 @@ def ffprobe(path: Path) -> dict[str, Any]:
         if stream.get("codec_type") == "audio":
             info["has_audio"] = True
     return info
-
-
-def video_thumbnail(src: Path) -> Path | None:
-    """A cached 320px JPEG poster for a video (``.thumbs/<name>.jpg`` next to it), made on demand."""
-    if not src.is_file():
-        return None
-    thumb = src.parent / ".thumbs" / f"{src.name}.jpg"
-    if thumb.exists() and thumb.stat().st_mtime >= src.stat().st_mtime:
-        return thumb
-    if not which("ffmpeg"):
-        return None
-    thumb.parent.mkdir(exist_ok=True)
-    result = subprocess.run(
-        ["ffmpeg", "-loglevel", "error", "-y", "-ss", "0.1", "-i", str(src), "-frames:v", "1",
-         "-vf", "scale=320:-2", str(thumb)],
-        capture_output=True, timeout=30,
-    )  # fmt: skip
-    return thumb if result.returncode == 0 and thumb.exists() else None
-
-
-def cached_probe(path: Path) -> dict[str, Any]:
-    """Probe via an existing sidecar (take/timeline ``x.json`` or input ``x.mp4.json``) before calling ffprobe."""
-    for sidecar in (path.with_suffix(".json"), path.with_suffix(path.suffix + ".json")):
-        probe = read_json(sidecar, {}).get("probe") if sidecar.exists() else None
-        if probe:
-            return probe
-    return ffprobe(path)
 
 
 def media_kind(name: str) -> str:
@@ -219,6 +187,10 @@ def request_guard(method: str, path: str, headers: Any, allowed_hosts: set[str])
         return 403, "cross-site request refused"
     if urlparse(path).path == "/api/upload":
         return None if headers.get("X-Filename") else (400, "X-Filename header is required")
+    if urlparse(path).path.startswith(PREFIX):
+        # helmstudio's proxy forwards the page's own requests, merge patches
+        # included; Host and Origin were checked above.
+        return None
     content_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     if content_type != "application/json":
         return 415, "Content-Type must be application/json"
@@ -260,6 +232,32 @@ def _median(values: list[float]) -> float:
     ordered = sorted(values)
     mid = len(ordered) // 2
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def estimate_from(takes: Iterable[tuple[Any, Any]], params: dict[str, Any]) -> dict[str, Any]:
+    """Predict a render's wall time from finished takes, each ``(elapsed seconds, form params)``.
+
+    The median of takes with the same workload when there are any (exact);
+    otherwise the median of same-task takes scaled by pixels x frames. Empty
+    when nothing fits.
+    """
+    target = workload(params)
+    if target is None:
+        return {}
+    same, scaled = [], []
+    for elapsed, take_params in takes:
+        prior = workload(take_params or {})
+        if not isinstance(elapsed, (int, float)) or elapsed <= 0 or prior is None:
+            continue
+        if prior["key"] == target["key"]:
+            same.append(float(elapsed))
+        elif prior["task"] == target["task"] and prior["work"] > 0:
+            scaled.append(float(elapsed) * target["work"] / prior["work"])
+    if same:
+        return {"seconds": round(_median(same)), "samples": len(same), "exact": True}
+    if scaled:
+        return {"seconds": round(_median(scaled)), "samples": len(scaled), "exact": False}
+    return {}
 
 
 DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*(h|min|s)\b")
@@ -381,45 +379,199 @@ def checks_status(checks: list[dict[str, str]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# state: config + sessions
+# helmstudio: its runtime SDK, through which ltx studio keeps everything
+# ---------------------------------------------------------------------------
+
+#: Where the page reads an asset: the studio API, through the proxy.
+ASSETS = f"{PREFIX}api/v1/assets/"
+#: A job's status in ltx studio, as a task job's state.
+JOB_STATES = {"done": "succeeded", "failed": "failed", "cancelled": "cancelled"}
+#: The kv document of the page's preferences: namespace and key.
+PREFERENCES = ("ui", "preferences")
+#: The records collection of the folders training tools write.
+FOLDERS = "folders"
+
+
+class UnavailableError(RuntimeError):
+    """ltx studio was started without helmstudio, or without its runtime SDK."""
+
+
+def connect() -> tuple[Any, Any]:
+    """helmstudio's client and same-origin proxy, from the environment it starts ltx studio with.
+
+    :class:`UnavailableError` without them.
+    """
+    if from_env is None:
+        raise UnavailableError(
+            "helm-runtime-sdk is not installed in this environment; ltx studio keeps everything through it"
+        )
+    if not os.environ.get("HELM_API"):
+        raise UnavailableError(
+            "helmstudio did not start ltx studio. Start it from helmstudio, or on its own with "
+            "`helm dev -f helmstudio.yaml` (web/run.sh), which keeps what it stores in ./.helm"
+        )
+    return from_env(), Proxy.from_env()
+
+
+def asset_url(asset_id: str) -> str:
+    return f"{ASSETS}{asset_id}"
+
+
+def thumb_url(asset_id: str) -> str:
+    return f"{ASSETS}{asset_id}/thumb?w=320"
+
+
+def without_nulls(value: Any) -> Any:
+    """``value`` as a state document stores it: a merge patch removes a member whose value is null."""
+    if isinstance(value, dict):
+        return {key: without_nulls(item) for key, item in value.items() if item is not None}
+    return value
+
+
+def merge_patch(old: Any, new: Any) -> Any:
+    """The JSON merge patch (RFC 7396) that turns ``old`` into ``new``; ``{}`` when they are equal.
+
+    ``new`` holds no nulls (:func:`without_nulls`): in a patch, null removes.
+    """
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return new
+    patch: dict[str, Any] = {key: None for key in old if key not in new}
+    for key, value in new.items():
+        if key not in old:
+            patch[key] = value
+        elif old[key] != value:
+            patch[key] = merge_patch(old[key], value) if isinstance(old[key], dict) else value
+    return patch
+
+
+def media_hints(probe: dict[str, Any]) -> dict[str, Any]:
+    """What adopting a file may tell helmstudio about it, from ffprobe."""
+    hints = {"width": probe.get("width"), "height": probe.get("height"),
+             "duration_s": probe.get("duration"), "fps": probe.get("fps")}  # fmt: skip
+    return {key: value for key, value in hints.items() if value}
+
+
+def pages(fetch: Callable[..., dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Every item of a paged listing."""
+    cursor = None
+    while True:
+        page = fetch(limit=200, cursor=cursor)
+        yield from page.get("items") or []
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return
+
+
+class HelmJob:
+    """A render, reported to helmstudio as a task job: its state, its progress and its log.
+
+    The log is what the page's terminal streams (helm-terminal), so it is sent
+    on a timer rather than when the next line comes: a line printed before a
+    minute of denoising shows at once. Reporting never fails a render. A call
+    helmstudio refuses is printed, and the render goes on.
+    """
+
+    #: Seconds between progress reports.
+    INTERVAL_S = 1.0
+    #: Seconds between log appends while the render runs.
+    LOG_INTERVAL_S = 0.5
+
+    def __init__(self, client: Any, session_id: str, local_id: str) -> None:
+        self.client = client
+        self.local_id = local_id
+        self.id = client.jobs.create({"state": "queued", "subject_kind": "session", "subject_id": session_id})["id"]
+        self.cancelling = False
+        self._lock = threading.Lock()
+        self._sending = threading.Lock()
+        self._unsent: list[str] = []
+        self._ended = threading.Event()
+        self._progressed = time.monotonic()
+
+    def start(self) -> None:
+        self._call(self.client.jobs.update, self.id, {"state": "running"})
+        threading.Thread(target=self._send_log, name=f"helmstudio-log-{self.id}", daemon=True).start()
+
+    def progress(self, percent: int) -> None:
+        if time.monotonic() - self._progressed >= self.INTERVAL_S:
+            self._progressed = time.monotonic()
+            self._call(self.client.jobs.update, self.id, {"progress_num": percent, "progress_den": 100})
+
+    def log(self, line: str, rewrites: bool = False) -> None:
+        """Add a line to the log. A ``rewrites`` line is progress, which the terminal draws over the one before it.
+
+        It is sent ending in a carriage return. Whatever is written after it
+        draws over it, as on a terminal, so a progress line not sent yet gives
+        way to the next line: of a bar's updates between two appends only the
+        last is sent, and none when the bar closes with its final line.
+        """
+        text = f"{line}\r" if rewrites else line
+        with self._lock:
+            if self._unsent and self._unsent[-1].endswith("\r"):
+                self._unsent[-1] = text
+            else:
+                self._unsent.append(text)
+
+    def _send_log(self) -> None:
+        while not self._ended.wait(self.LOG_INTERVAL_S):
+            self.flush()
+
+    def flush(self) -> None:
+        """Append the lines not sent yet. One append at a time, so the log keeps their order."""
+        with self._sending:
+            with self._lock:
+                unsent, self._unsent = self._unsent, []
+            for start in range(0, len(unsent), 1000):
+                batch = [line[:16384] for line in unsent[start : start + 1000]]
+                self._call(self.client.jobs.append_log, self.id, {"lines": batch})
+
+    def finish(self, status: str, error: str | None = None) -> None:
+        self._ended.set()
+        self.flush()
+        body: dict[str, Any] = {"state": JOB_STATES.get(status, "failed")}
+        if body["state"] == "succeeded":
+            body.update(progress_num=100, progress_den=100)
+        elif body["state"] == "failed":
+            body["last_error"] = {"code": "render_failed", "message": (error or "the render failed")[:4000]}
+        self._call(self.client.jobs.update, self.id, body)
+
+    @staticmethod
+    def _call(method: Callable[..., Any], *args: Any) -> None:
+        try:
+            method(*args)
+        except Exception as exc:
+            print(f"[helmstudio] {exc}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# state: the model, and everything helmstudio keeps for ltx studio
 # ---------------------------------------------------------------------------
 
 
 class State:
-    def __init__(self, model: str, gemma: str | None) -> None:
+    """The model renders use, and everything ltx studio keeps, which it keeps and reads through helmstudio.
+
+    ``client`` is the runtime SDK's client, and ``proxy`` its same-origin proxy
+    (:func:`connect`).
+    """
+
+    def __init__(self, model: str, gemma: str | None, client: Any, proxy: Any) -> None:
         self.lock = threading.Lock()
         self.model = model
         self.gemma = gemma
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        last = read_json(SESSIONS_DIR / "last_session.json", {}).get("name")
-        self.active = last if last and (SESSIONS_DIR / last).is_dir() else None
-        if self.active is None:
-            existing = self.sessions()
-            self.active = existing[0] if existing else "session-1"
-        self.ensure_session(self.active)
-
-    # sessions -------------------------------------------------------------
-    def session_dir(self, name: str) -> Path:
-        clean = safe_name(name, "session-1")
-        path = (SESSIONS_DIR / clean).resolve()
-        if path.parent != SESSIONS_DIR.resolve():
-            raise ValueError("invalid session name")
-        return path
-
-    def ensure_session(self, name: str) -> Path:
-        path = self.session_dir(name)
-        for kind in MEDIA_KINDS:
-            (path / kind).mkdir(parents=True, exist_ok=True)
-        return path
-
-    def sessions(self) -> list[str]:
-        return sorted(p.name for p in SESSIONS_DIR.iterdir() if p.is_dir() and not p.name.startswith("."))
-
-    def activate(self, name: str) -> dict[str, Any]:
-        path = self.ensure_session(name)
-        self.active = path.name
-        write_json(SESSIONS_DIR / "last_session.json", {"name": path.name})
-        return {"name": path.name, "settings": read_json(path / "setting.json", {})}
+        self.client = client
+        self.proxy = proxy
+        paths = client.me.get()["paths"]
+        #: Scratch helmstudio gives this launch of the studio, and clears when it stops it.
+        self.stage = Path(paths["stage"])
+        #: The studio's own persistent directory, for files that are not assets.
+        self.data = Path(paths["data"])
+        #: Guards the sessions read from helmstudio and the renders reported to it.
+        self._helm_lock = threading.RLock()
+        self._sessions: dict[str, dict[str, Any]] = {}  # by name
+        self._renders: dict[str, HelmJob] = {}  # renders queued or running, by ltx studio's job id
+        self.active = self.last_opened() or next(iter(self.sessions()), "session-1")
+        #: The render running now: lines go to its log.
+        self.running: dict[str, Any] | None = None
 
     def model_info(self) -> dict[str, Any]:
         info = LTX_RUN.inspect_model(self.model) if self.model else None
@@ -439,115 +591,480 @@ class State:
             "status": checks_status(checks),
         }
 
-    # terminal log ------------------------------------------------------------
-    def append_terminal(self, session: str, line: str) -> None:
-        """Append one finished terminal line to the session's ``terminal.log`` (rotated at ~2 MB)."""
-        try:
-            path = self.session_dir(session) / TERMINAL_LOG
-            if not path.parent.is_dir():
-                return
-            with self.lock:
-                if path.exists() and path.stat().st_size > TERMINAL_LOG_MAX_BYTES:
-                    path.replace(path.with_suffix(".log.1"))
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write(line.rstrip("\n") + "\n")
-        except (OSError, ValueError):
-            pass
+    # sessions -------------------------------------------------------------
+    def session_name(self, requested: Any) -> str:
+        """The session a request names, or the active one."""
+        return str(requested or self.active).strip() or "session-1"
 
-    def terminal_tail(self, session: str, lines: int = 400) -> list[str]:
-        path = self.session_dir(session) / TERMINAL_LOG
+    def sessions(self) -> list[str]:
+        """Every session's name, read again from helmstudio."""
+        with self._helm_lock:
+            self._sessions = {session["name"]: session for session in pages(self.client.sessions.list)}
+            return sorted(self._sessions)
+
+    def last_opened(self) -> str | None:
+        """The session opened most recently, when one has been opened."""
+        latest = next(iter(self.client.sessions.list(limit=1).get("items") or []), None)
+        return latest["name"] if latest and latest.get("opened_at") else None
+
+    def session(self, name: str, *, create: bool = False) -> dict[str, Any] | None:
+        """The live session called ``name``; made when there is none and ``create`` is set."""
+        with self._helm_lock:
+            if name not in self._sessions:
+                self.sessions()
+            if name not in self._sessions and create:
+                self._sessions[name] = self.client.sessions.create({"name": name, "state": {}})
+            return self._sessions.get(name)
+
+    def _existing(self, name: str) -> dict[str, Any]:
+        session = self.session(name)
+        if session is None:
+            raise ValueError(f"no session named {name!r}")
+        return session
+
+    def activate(self, name: str) -> dict[str, Any]:
+        """Open a session, making it when there is none, so that it is the one opened most recently."""
+        session = self.session(name, create=True)
+        self.client.sessions.activate(session["id"])
+        self.active = session["name"]
+        return {"name": session["name"], "settings": self.settings(session["name"])}
+
+    def duplicate_session(self, session: str, new_name: str) -> dict[str, Any]:
+        """Copy a session's settings and inputs under a new name, and open the copy. Its takes stay with the original."""
+        if not new_name.strip():
+            raise ValueError("enter a name")
+        source = self._existing(session)
         try:
-            with open(path, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                start = max(0, f.tell() - 256_000)
-                f.seek(start)
-                text = f.read().decode("utf-8", "replace").splitlines()
-        except OSError:
+            copy = self.client.sessions.duplicate(source["id"], {"name": new_name.strip()})
+        except HelmError as exc:
+            if exc.status == 409:
+                raise ValueError("a session with that name already exists") from None
+            raise
+        with self._helm_lock:
+            self._sessions[copy["name"]] = copy
+        return self.activate(copy["name"])
+
+    def delete_session(self, session: str) -> dict[str, Any]:
+        """Delete a session with its settings and inputs, and open another. Its takes stay in helmstudio's gallery."""
+        self.client.sessions.delete(self._existing(session)["id"])
+        with self._helm_lock:
+            self._sessions.pop(session, None)
+        remaining = self.sessions()
+        return self.activate(remaining[0] if remaining else "session-1")
+
+    def _state(self, name: str) -> dict[str, Any]:
+        """A session's state document; empty when there is no such session."""
+        return (self.session(name) or {}).get("state") or {}
+
+    def settings(self, name: str) -> dict[str, Any]:
+        return self._state(name).get("settings") or {}
+
+    def save_settings(self, name: str, settings: dict[str, Any]) -> None:
+        wanted = without_nulls(settings)
+
+        def change(state: dict[str, Any]) -> dict[str, Any]:
+            patch = merge_patch(state.get("settings") or {}, wanted)
+            return {"settings": patch} if patch else {}
+
+        self._update_state(name, change)
+
+    def inputs(self, name: str) -> dict[str, dict[str, Any]]:
+        """A session's inputs by name: an asset each, with what ltx studio knows about it."""
+        return dict(self._state(name).get("inputs") or {})
+
+    def put_input(self, session: str, name: str, entry: dict[str, Any], *, replace: bool = False) -> str:
+        """Add an input to a session as ``name``, replacing one of that name when ``replace`` is set and
+        otherwise taking a free variant of the name. Returns the name it got."""
+        chosen = name
+
+        def change(state: dict[str, Any]) -> dict[str, Any]:
+            nonlocal chosen
+            taken = state.get("inputs") or {}
+            stem, suffix = os.path.splitext(name)
+            chosen = name
+            while chosen in taken and not replace:
+                chosen = f"{stem}-{uuid.uuid4().hex[:4]}{suffix}"
+            patch = merge_patch(taken.get(chosen) or {}, without_nulls(entry))
+            return {"inputs": {chosen: patch}} if patch else {}
+
+        self._update_state(session, change)
+        return chosen
+
+    def _update_state(self, name: str, change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        """Merge ``change(state)`` into a session's state, reading it again when another writer got there first."""
+        with self._helm_lock:
+            for attempt in range(3):
+                session = self.session(name, create=True)
+                patch = change(session.get("state") or {})
+                if not patch:
+                    return
+                try:
+                    updated = self.client.sessions.update(session["id"], {"state": patch}, if_match=session["etag"])
+                except HelmError as exc:
+                    if exc.status not in (404, 409) or attempt == 2:
+                        raise
+                    self._sessions.pop(name, None)
+                    continue
+                self._sessions[updated["name"]] = updated
+                return
+
+    # the page's preferences -----------------------------------------------
+    def preferences(self) -> dict[str, Any]:
+        """The page's preferences: the side panel, the terminal's height, notifications."""
+        try:
+            return self.client.kv.get(*PREFERENCES)["doc"]
+        except HelmError as exc:
+            if exc.status == 404:
+                return {}
+            raise
+
+    def save_preferences(self, changes: dict[str, Any]) -> None:
+        """Merge ``changes`` into the page's preferences; a null removes one."""
+        try:
+            self.client.kv.patch(*PREFERENCES, changes)
+        except HelmError as exc:
+            if exc.status != 404:
+                raise
+            self.client.kv.put(*PREFERENCES, without_nulls(changes))
+
+    # the terminal: the log of the session's latest render -------------------
+    def render_log(self, session: str, line: str, rewrites: bool = False, kind: str | None = None) -> None:
+        """Add a line to the log of the session's running render, which helmstudio keeps and the terminal streams."""
+        running = self.running
+        report = self.render_report(running["id"]) if running and running["session"] == session else None
+        if report is not None:
+            colour = LOG_COLOURS.get(kind or "")
+            report.log(f"\x1b[{colour}m{line}\x1b[0m" if colour else line, rewrites)
+
+    def terminal_job(self, session: str) -> str | None:
+        """The helmstudio job whose log the session's terminal shows: its latest render no longer queued.
+
+        Looked for among helmstudio's latest jobs.
+        """
+        found = self.session(session)
+        if found is None:
+            return None
+        for job in self.client.jobs.list(limit=100).get("items") or []:
+            ours = (job.get("kind"), job.get("subject_kind"), job.get("subject_id")) == ("task", "session", found["id"])
+            if ours and job.get("state") != "queued":
+                return job["id"]
+        return None
+
+    # assets ---------------------------------------------------------------
+    def staged(self, kind: str, name: str) -> Path:
+        """A new path for a file named ``name`` in the stage directory, in a directory of its own."""
+        path = self.stage / kind / uuid.uuid4().hex / Path(name).name
+        path.parent.mkdir(parents=True)
+        return path
+
+    def adopt_staged(self, path: Path, kind: str, probe: dict[str, Any], *, pinned: bool = False) -> dict[str, Any]:
+        """Adopt a file from :meth:`staged`, and remove the directory it had."""
+        asset = self.adopt(path, kind, probe, pinned=pinned)
+        with contextlib.suppress(OSError):
+            path.parent.rmdir()
+        return asset
+
+    def adopt(self, path: Path, kind: str, probe: dict[str, Any], *, pinned: bool = False) -> dict[str, Any]:
+        """Adopt a file into the asset store by hardlink, never a copy.
+
+        From the stage directory, the stage entry is then gone; from the data
+        directory, the file stays where it is, read-only.
+        """
+        return self.client.assets.adopt({"path": str(path), "kind": kind, "pinned": pinned, **media_hints(probe)})
+
+    def materialise(self, asset_id: str, name: str) -> Path:
+        """An asset as a file a pipeline or ffmpeg can read, fetched into the stage directory once per launch."""
+        path = self.stage / "assets" / asset_id / Path(name).name
+        if not path.is_file():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(f"{path.name}.part")
+            partial.write_bytes(self.client.assets.read(asset_id).read())
+            partial.replace(path)
+        return path
+
+    def pin(self, asset_id: str, name: str, kind: str) -> None:
+        """Pin an asset already stored: adopting its bytes again stores nothing, and pins it."""
+        link = self.staged("pin", name)
+        os.link(self.materialise(asset_id, name), link)
+        self.adopt_staged(link, kind, {}, pinned=True)
+
+    # renders --------------------------------------------------------------
+    def input_path(self, session: str, name: str) -> Path:
+        """The file a render reads for one of the session's inputs: its asset, fetched into the stage directory."""
+        entry = self.inputs(session).get(name)
+        if entry is None:
+            raise ValueError(f"input not found in session: {name}")
+        return self.materialise(entry["asset_id"], name)
+
+    def outputs_dir(self, session: str, kind: str) -> Path:
+        """Where a render writes: a take (``mp4``) to the stage directory, a folder (``dir``) to the data directory."""
+        if kind == "dir":
+            directory = self.data / "outputs" / self.session(session, create=True)["id"]
+        else:
+            directory = self.stage / "takes"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def previews_dir(self, session: str) -> Path:
+        return self.stage / "previews"
+
+    def take_finished(self, job: dict[str, Any], output: Path, previews: list[Path]) -> str:
+        """Adopt the take and record it in the gallery, with its settings and the inputs it came from.
+
+        Not its argv: absolute paths to the model and the checkout do not belong
+        in a gallery row (helmstudio's docs/design/08-h3-dry-run.md).
+        """
+        session, probe = job["session"], ffprobe(output)
+        entries = self.inputs(session)
+        inputs = [{"asset_id": entries[name]["asset_id"], "role": role}
+                  for name, role in job.get("inputs") or [] if name in entries]  # fmt: skip
+        settings = job["params"] or {}
+        params = {
+            "name": output.name, "task_id": job["task_id"], "label": job["label"],
+            "prompt": (settings.get("common") or {}).get("prompt"), "seed": job.get("seed"),
+            "created": job["created"], "elapsed": job["elapsed"], "probe": probe,
+            "settings": settings, "previews": [_rel(path, self.stage) for path in previews],
+        }  # fmt: skip
+        params = {key: value for key, value in params.items() if value not in (None, "", [])}
+        asset = self.adopt(output, "video", probe)
+        item = self.client.gallery.add({
+            "kind": "video", "asset_id": asset["id"], "title": output.stem,
+            "session_id": self.session(session, create=True)["id"], "params": params, "inputs": inputs,
+        })  # fmt: skip
+        return f"[helmstudio] kept {output.name} as gallery item {item['id']}"
+
+    def folder_finished(self, job: dict[str, Any], folder: Path) -> str:
+        """Keep the folder a training tool wrote: each file an asset, adopted where it is, and the folder a record.
+
+        The folder stays in the data directory, where the next tool reads it by
+        path; adopted, its files are read-only.
+        """
+        files = {}
+        for path in sorted(folder.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                kind = media_kind(path.name)
+                asset = self.adopt(path, kind if kind != "file" else "other", {})
+                files[path.relative_to(folder).as_posix()] = asset["id"]
+        record = self.client.records.insert(FOLDERS, {
+            "session_id": self.session(job["session"], create=True)["id"],
+            "name": folder.name, "path": folder.relative_to(self.data).as_posix(), "task_id": job["task_id"],
+            "label": job["label"], "created": job["created"], "files": files,
+        })  # fmt: skip
+        return f"[helmstudio] kept {folder.name}: {len(files)} files as assets, in record {record['id']}"
+
+    def job_queued(self, job: dict[str, Any]) -> None:
+        """Report a render as a task job of its session. ``helm_job`` is its id, or None when helmstudio refused it."""
+        job["helm_job"] = None
+        try:
+            report = HelmJob(self.client, self.session(job["session"], create=True)["id"], job["id"])
+        except Exception as exc:  # reporting a render is never a condition of running it
+            print(f"[helmstudio] could not report render {job['id']}: {exc}", flush=True)
+            return
+        with self._helm_lock:
+            self._renders[job["id"]] = report
+        job["helm_job"] = report.id
+
+    def render_report(self, local_id: str) -> HelmJob | None:
+        """The job a queued or running render is reported as; None when helmstudio could not be told of it."""
+        return self._renders.get(local_id)
+
+    def job_started(self, job: dict[str, Any]) -> None:
+        self.running = job
+        report = self.render_report(job["id"])
+        if report is not None:
+            report.start()
+
+    def job_progress(self, job: dict[str, Any], progress: dict[str, Any]) -> None:
+        report = self.render_report(job["id"])
+        if report is not None:
+            report.progress(percent(progress))
+
+    def job_finished(self, job: dict[str, Any]) -> None:
+        if self.running is job:
+            self.running = None
+        report = self.render_report(job["id"])
+        if report is None:
+            return
+        report.finish(job["status"], job.get("error"))
+        with self._helm_lock:
+            self._renders.pop(job["id"], None)
+
+    def follow_cancellations(self, cancel: Callable[[str], Any]) -> None:
+        """Cancel a render, by ltx studio's job id, when helmstudio asks for it to be cancelled."""
+
+        def follow() -> None:
+            last = None
+            while True:
+                try:
+                    for event in self.client.events.subscribe(last_event_id=last):
+                        last = event.id or last
+                        if event.name != "job":
+                            continue
+                        reported = (event.json() or {}).get("job") or {}
+                        job = next((r for r in list(self._renders.values()) if r.id == reported.get("id")), None)
+                        if job is not None and reported.get("cancel_requested_at") and not job.cancelling:
+                            job.cancelling = True
+                            cancel(job.local_id)
+                except Exception:  # the stream ended: helmstudio restarted, or is stopping the studio
+                    pass
+                time.sleep(2)
+
+        threading.Thread(target=follow, name="helmstudio-events", daemon=True).start()
+
+    # takes ----------------------------------------------------------------
+    @staticmethod
+    def _take_name(item: dict[str, Any]) -> str:
+        return (item.get("params") or {}).get("name") or f"{item.get('title') or item['id']}.mp4"
+
+    def _take(self, item: dict[str, Any]) -> dict[str, Any]:
+        """A gallery item, as the page shows a take."""
+        params, asset = item.get("params") or {}, item.get("asset") or {}
+        return {
+            "name": self._take_name(item), "kind": "video", "size": asset.get("bytes"),
+            "url": asset_url(item["asset_id"]), "thumb": thumb_url(item["asset_id"]),
+            "task_id": params.get("task_id"), "label": params.get("label"),
+            "created": params.get("created") or item["created_at"], "elapsed": params.get("elapsed"),
+            "seed": params.get("seed"), "params": params.get("settings"), "probe": params.get("probe") or {},
+            "starred": bool(item.get("starred")),
+            # Live previews are scratch: a take from before helmstudio last started the studio has none left.
+            "previews": [p for p in params.get("previews") or [] if (self.stage / p).is_file()],
+        }  # fmt: skip
+
+    def _takes(self, session: str) -> list[dict[str, Any]]:
+        """A session's takes, newest first: its video items in helmstudio's gallery."""
+        found = self.session(session)
+        if found is None:
             return []
-        return (text[1:] if start else text)[-lines:]  # a mid-file seek starts on a partial line
+        return list(pages(lambda **page: self.client.gallery.query(session_id=found["id"], kind="video", **page)))
+
+    def _find_take(self, session: str, name: str) -> dict[str, Any]:
+        item = next((item for item in self._takes(session) if self._take_name(item) == name), None)
+        if item is None:
+            raise ValueError("take not found")
+        return item
+
+    def list_takes(self, session: str) -> list[dict[str, Any]]:
+        return [self._take(item) for item in self._takes(session)]
 
     def set_star(self, session: str, name: str, starred: bool) -> dict[str, Any]:
-        take = self.resolve_media(session, "outputs", name)
-        sidecar = take.with_suffix(".json")
-        if not take.is_file():
-            raise ValueError("take not found")
-        with self.lock:
-            meta = read_json(sidecar, {})
-            meta["starred"] = bool(starred)
-            write_json(sidecar, meta)
-        return {"ok": True, "starred": meta["starred"]}
+        self.client.gallery.update(self._find_take(session, name)["id"], {"starred": bool(starred)})
+        return {"ok": True, "starred": bool(starred)}
+
+    def delete_take(self, session: str, name: str) -> None:
+        """Delete a take from the gallery. helmstudio reclaims its file once nothing uses it."""
+        self.client.gallery.delete(self._find_take(session, name)["id"])
 
     def estimate(self, session: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Predict a render's wall time from this session's finished takes.
+        """Predict a render's wall time from this session's takes (``estimate_from``)."""
+        takes = [item.get("params") or {} for item in self._takes(session)]
+        return estimate_from(((take.get("elapsed"), take.get("settings")) for take in takes), params)
 
-        The median of takes with the same workload when there are any (exact);
-        otherwise the median of same-task takes scaled by pixels x frames. Empty
-        when nothing fits.
-        """
-        target = workload(params)
-        if target is None:
-            return {}
-        same, scaled = [], []
-        for sidecar in (self.ensure_session(session) / "outputs").glob("*.json"):
-            meta = read_json(sidecar, {})
-            elapsed = meta.get("elapsed")
-            prior = workload(meta.get("params") or {})
-            if not isinstance(elapsed, (int, float)) or elapsed <= 0 or prior is None:
-                continue
-            if prior["key"] == target["key"]:
-                same.append(float(elapsed))
-            elif prior["task"] == target["task"] and prior["work"] > 0:
-                scaled.append(float(elapsed) * target["work"] / prior["work"])
-        if same:
-            return {"seconds": round(_median(same)), "samples": len(same), "exact": True}
-        if scaled:
-            return {"seconds": round(_median(scaled)), "samples": len(scaled), "exact": False}
-        return {}
-
-    def resolve_media(self, session: str, kind: str, name: str) -> Path:
-        if kind not in MEDIA_KINDS:
-            raise ValueError("invalid media kind")
-        base = self.session_dir(session) / kind
-        path = (base / Path(unquote(name)).name).resolve()
-        if path.parent != base.resolve():
-            raise ValueError("invalid media path")
-        return path
-
-    def thumbnail(self, session: str, kind: str, name: str) -> Path | None:
-        return video_thumbnail(self.resolve_media(session, kind, name))
-
-    def resolve_session_path(self, rel: str) -> Path:
-        """Resolve a path relative to the sessions root, refusing anything that escapes it."""
-        root = SESSIONS_DIR.resolve()
-        path = (root / unquote(rel).lstrip("/")).resolve()
-        if path != root and root not in path.parents:
-            raise ValueError("path escapes the sessions directory")
-        return path
-
-    def list_media(self, session: str, kind: str) -> list[dict[str, Any]]:
-        base = self.ensure_session(session) / kind
+    # inputs ---------------------------------------------------------------
+    def list_inputs(self, session: str) -> list[dict[str, Any]]:
+        entries = sorted(self.inputs(session).items(), key=lambda pair: pair[1].get("added") or "", reverse=True)
         items = []
-        for path in sorted(base.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if path.is_dir() or path.name.startswith(".") or path.suffix in {".json", ".tmp"}:
-                continue
-            meta_path = path.with_suffix(path.suffix + ".json") if kind == "inputs" else path.with_suffix(".json")
-            meta = read_json(meta_path, {})
-            if "probe" not in meta and media_kind(path.name) in {"video", "audio", "image"}:
-                meta["probe"] = ffprobe(path)
-                with contextlib.suppress(OSError):
-                    write_json(meta_path, meta)
-            item = {
-                "name": path.name,
-                "kind": media_kind(path.name),
-                "size": path.stat().st_size,
-                "mtime": path.stat().st_mtime,
-                "url": f"/media/{session}/{kind}/{path.name}",
-                **meta,
-            }
+        for name, entry in entries:
+            item = {"name": name, "kind": entry.get("kind", "file"), "url": asset_url(entry["asset_id"]),
+                    "original_name": entry.get("original_name", name), "probe": entry.get("probe") or {}}  # fmt: skip
             if item["kind"] == "video":
-                item["thumb"] = f"/thumb/{session}/{kind}/{path.name}?v={int(item['mtime'])}"
+                item["thumb"] = thumb_url(entry["asset_id"])
             items.append(item)
         return items
+
+    def _add_input(self, session: str, path: Path, original_name: str, *, replace: bool = False) -> dict[str, Any]:
+        """Adopt a staged file as a pinned asset, and add it to the session's inputs.
+
+        An upload of a name already taken gets a free variant of it; a frame or
+        the audio of a take replaces the one extracted before (``replace``).
+        """
+        kind = media_kind(path.name)
+        probe = ffprobe(path) if kind != "file" else {}
+        asset = self.adopt_staged(path, kind if kind != "file" else "other", probe, pinned=True)
+        entry = {"asset_id": asset["id"], "kind": kind, "original_name": original_name,
+                 "probe": probe, "added": now_iso()}  # fmt: skip
+        return {"name": self.put_input(session, path.name, entry, replace=replace), "kind": kind,
+                "original_name": original_name, "probe": probe}  # fmt: skip
+
+    def save_upload(self, session: str, original: str, body: BinaryIO, length: int) -> dict[str, Any]:
+        stem, suffix = os.path.splitext(original)
+        staged = self.staged("uploads", f"{safe_name(stem, 'upload')}{suffix.lower()}")
+        receive(body, length, staged)
+        return self._add_input(session, staged, original)
+
+    def delete_input(self, session: str, name: str) -> None:
+        """Take an input out of the session. Its asset stays pinned: takes made from it name it as an input."""
+
+        def change(state: dict[str, Any]) -> dict[str, Any]:
+            return {"inputs": {name: None}} if name in (state.get("inputs") or {}) else {}
+
+        self._update_state(session, change)
+
+    def frame(self, session: str, take: str, position: str) -> dict[str, Any]:
+        """A take's first or last frame, as an input."""
+        source = self.materialise(self._find_take(session, take)["asset_id"], take)
+        dst = self.staged("frames", f"{Path(take).stem}-{position}.png")
+        grab_frame(source, dst, position)
+        return {"name": self._add_input(session, dst, dst.name, replace=True)["name"]}
+
+    def audio(self, session: str, take: str) -> dict[str, Any]:
+        """A take's audio track, as an input."""
+        source = self.materialise(self._find_take(session, take)["asset_id"], take)
+        dst = self.staged("audio", f"{Path(take).stem}-audio.wav")
+        grab_audio(source, dst)
+        return {"name": self._add_input(session, dst, dst.name, replace=True)["name"]}
+
+    def use_video(self, session: str, kind: str, name: str) -> dict[str, Any]:
+        """A take or an exported sequence, as an input: the same asset, pinned now that a session uses it."""
+        if kind == "outputs":
+            item = self._find_take(session, name)
+            probe = (item.get("params") or {}).get("probe") or {}
+        elif kind == "timeline":
+            item = self._find_export(name)
+            probe = self._export(item)["probe"]
+        else:
+            raise ValueError("invalid media kind")
+        self.pin(item["asset_id"], name, "video")
+        entry = {"asset_id": item["asset_id"], "kind": "video", "original_name": name,
+                 "probe": probe, "added": now_iso()}  # fmt: skip
+        return {"name": self.put_input(session, name, entry)}
+
+    # timeline: sequences exported from helmstudio's timeline --------------
+    def _export(self, item: dict[str, Any]) -> dict[str, Any]:
+        asset = item.get("asset") or {}
+        return {
+            "name": f"{safe_name(item.get('title') or 'sequence', 'sequence')}-{item['id'][-6:].lower()}.mp4",
+            "kind": "video", "size": asset.get("bytes"), "created": item["created_at"],
+            "url": asset_url(item["asset_id"]), "thumb": thumb_url(item["asset_id"]),
+            "probe": {"duration": asset.get("duration_s"), "width": asset.get("width"),
+                      "height": asset.get("height"), "fps": asset.get("fps")},
+        }  # fmt: skip
+
+    def _exports(self) -> list[dict[str, Any]]:
+        """The sequences exported from helmstudio's timeline, newest first."""
+        items = pages(lambda **page: self.client.gallery.query(kind="video", **page))
+        return [item for item in items if item.get("timeline_id")]
+
+    def _find_export(self, name: str) -> dict[str, Any]:
+        item = next((item for item in self._exports() if self._export(item)["name"] == name), None)
+        if item is None:
+            raise ValueError("sequence not found")
+        return item
+
+    def list_timeline(self, session: str) -> list[dict[str, Any]]:
+        """Every exported sequence. A sequence belongs to no session, so each session lists them all."""
+        return [self._export(item) for item in self._exports()]
+
+    def delete_timeline(self, session: str, name: str) -> None:
+        self.client.gallery.delete(self._find_export(name)["id"])
+
+    # files ----------------------------------------------------------------
+    def resolve_stage_path(self, rel: str) -> Path:
+        """A live preview's path, relative to the stage directory, refusing anything that escapes it."""
+        root = self.stage.resolve()
+        path = (root / unquote(rel).lstrip("/")).resolve()
+        if path != root and root not in path.parents:
+            raise ValueError("path escapes the stage directory")
+        return path
 
 
 # ---------------------------------------------------------------------------
@@ -561,11 +1078,36 @@ TQDM_RE = re.compile(r"(Denoising[^:]*):\s+(\d+)%\|.*?\|\s*(\d+)/(\d+)")
 SAVED_RE = re.compile(r"Saved to: (.+)$")
 #: Stepper stages in order; a job's stage only ever moves forward (two-stage runs reload the transformer).
 STAGES = ("encode", "load", "denoise", "decode", "save")
+#: ANSI colours for ltx studio's own lines in a render's log, by kind; helm-terminal draws them in the log tokens.
+LOG_COLOURS = {"cmd": "36", "done": "36", "failed": "31", "cancelled": "31", "err": "31"}
 PHASE_STAGES = (
     (re.compile(r"^(Loading text encoder|Encoding prompt)"), "encode"),
     (re.compile(r"^Loading transformer"), "load"),
     (re.compile(r"^(Loading decoders|Decoding)"), "decode"),
 )
+#: A flag naming an input, as the role of that input in a take's provenance.
+ROLE_FLAG = re.compile(r"--([a-z][a-z0-9-]{0,62})")
+
+
+def percent(progress: dict[str, Any]) -> int:
+    """A job's overall progress, 0-100, weighing its stages as the page's progress does (``overallPercent``)."""
+    denoise = (75, 88) if (progress.get("stage") or 1) > 1 else (15, 75)
+    bands = {"encode": (0, 8), "load": (8, 15), "denoise": denoise, "decode": (88, 98), "save": (98, 100)}
+    low, high = bands.get(progress.get("stage_key") or "", (0, 0))
+    if progress.get("stage_key") == "denoise" and progress.get("total"):
+        return round(low + (high - low) * min(1, progress.get("step", 0) / progress["total"]))
+    return low
+
+
+def input_roles(args: list[Any]) -> list[tuple[str, str]]:
+    """Each input a render's arguments name, with the flag before it as its role (``--image`` → ``image``)."""
+    roles, role = [], "input"
+    for token in args:
+        if isinstance(token, str) and (flag := ROLE_FLAG.fullmatch(token)):
+            role = flag.group(1).replace("-", "_")
+        elif isinstance(token, dict) and "input" in token:
+            roles.append((str(token["input"]), role))
+    return roles
 
 
 class Runner:
@@ -581,6 +1123,7 @@ class Runner:
         #: Guards job dicts: the worker thread mutates them while request threads serialize summaries.
         self.job_lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
+        state.follow_cancellations(self.cancel)
 
     # events ---------------------------------------------------------------
     def subscribe(self) -> queue.Queue:
@@ -600,19 +1143,14 @@ class Runner:
                 with contextlib.suppress(queue.Full):
                     q.put_nowait(message)
 
-    def log(self, session: str | None, line: str, replace: bool = False, kind: str | None = None) -> None:
-        """Stream a terminal line to browsers and keep finished lines in the session's terminal.log."""
-        payload: dict[str, Any] = {"line": line, "replace": replace, "session": session}
-        if kind:
-            payload["kind"] = kind
-        self.emit("log", payload)
-        if session and not replace:
-            self.state.append_terminal(session, line)
+    def log(self, session: str, line: str, replace: bool = False, kind: str | None = None) -> None:
+        """Add a line to the log of the session's render, which the page's terminal streams from helmstudio."""
+        self.state.render_log(session, line, replace, kind)
 
     def summary(self, job: dict[str, Any]) -> dict[str, Any]:
         keys = ("id", "session", "task_id", "label", "status", "created", "started", "finished",
                 "elapsed", "output", "returncode", "seed", "argv_display", "error", "hint",
-                "preview_latest", "preview_count", "estimate_s")  # fmt: skip
+                "preview_latest", "preview_count", "estimate_s", "helm_job")  # fmt: skip
         with self.job_lock:
             out = {k: job.get(k) for k in keys}
             out["progress"] = dict(job.get("progress") or {})
@@ -624,11 +1162,12 @@ class Runner:
             return [self.summary(self.jobs[i]) for i in ids if i in self.jobs]
 
     # submission -----------------------------------------------------------
-    def build_argv(self, req: dict[str, Any], job_id: str | None = None) -> tuple[list[str], Path | None, Path]:
+    def build_argv(self, req: dict[str, Any], job_id: str | None = None) -> tuple[list[str], Path | None, str]:
+        """The argv for a render, the path it writes, and its session's name."""
         subcommand = req.get("subcommand")
         if subcommand not in ALLOWED_COMMANDS:
             raise ValueError(f"unsupported command: {subcommand!r}")
-        session = self.state.ensure_session(req.get("session") or self.state.active)
+        session = self.state.session_name(req.get("session"))
         argv: list[str] = [subcommand]
         skip_next = False
         for token in req.get("args", []):
@@ -636,10 +1175,7 @@ class Runner:
                 skip_next = False
                 continue
             if isinstance(token, dict) and "input" in token:
-                path = self.state.resolve_media(session.name, "inputs", token["input"])
-                if not path.exists():
-                    raise ValueError(f"input not found in session: {token['input']}")
-                argv.append(str(path))
+                argv.append(str(self.state.input_path(session, token["input"])))
             elif isinstance(token, dict) and "path" in token:
                 argv.append(str(Path(str(token["path"])).expanduser()))
             elif isinstance(token, (str, int, float)):
@@ -660,14 +1196,15 @@ class Runner:
         if subcommand in QUANTIZE_COMMANDS and req.get("quantize") in {"8", "4", "none"}:
             argv += ["--quantize-on-load", req["quantize"]]
         if subcommand in STEPWISE_COMMANDS and isinstance(req.get("preview"), dict):
-            argv += preview_args(req["preview"], session / "previews" / (job_id or uuid.uuid4().hex[:10]))
+            argv += preview_args(req["preview"], self.state.previews_dir(session) / (job_id or uuid.uuid4().hex[:10]))
 
         output: Path | None = None
         kind = req.get("output", "mp4")
         stamp = datetime.now().strftime("%m%d-%H%M%S")
         stem = safe_name(req.get("take_name") or req.get("task_id") or "take", "take")
         if kind in {"mp4", "dir"}:
-            output = self._unique_output(session / "outputs", f"{stem}-{stamp}", ".mp4" if kind == "mp4" else "")
+            directory = self.state.outputs_dir(session, kind)
+            output = self._unique_output(directory, f"{stem}-{stamp}", ".mp4" if kind == "mp4" else "")
             argv += ["--output", str(output)]
         return argv, output, session
 
@@ -688,12 +1225,12 @@ class Runner:
     def submit(self, req: dict[str, Any]) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:10]
         argv, output, session = self.build_argv(req, job_id)
-        preview_dir = session / "previews" / job_id if "--stepwise-image-output-dir" in argv else None
+        preview_dir = self.state.previews_dir(session) / job_id if "--stepwise-image-output-dir" in argv else None
         job = {
             "id": job_id,
             "preview_dir": str(preview_dir) if preview_dir else None,
             "preview_count": 0,
-            "session": session.name,
+            "session": session,
             "task_id": req.get("task_id"),
             "label": req.get("label") or req.get("task_id"),
             "status": "queued",
@@ -703,16 +1240,28 @@ class Runner:
             "output": str(output) if output else None,
             "output_kind": req.get("output", "mp4"),
             "params": req.get("params", {}),
+            "inputs": input_roles(req.get("args", [])),
             "seed": req.get("seed"),
             "progress": {"phase": "queued", "step": 0, "total": 0, "stage": 0, "stage_key": None},
-            "estimate_s": self.state.estimate(session.name, req.get("params") or {}).get("seconds"),
+            "estimate_s": self.state.estimate(session, req.get("params") or {}).get("seconds"),
         }
+        self.state.job_queued(job)
         with self.cond:
             self.jobs[job["id"]] = job
             self.pending.append(job["id"])
             self.cond.notify()
         self.emit("queue", self.queue_state())
         return self.summary(job)
+
+    def _keep(self, job: dict[str, Any], output: Path, keep: Callable[[], str]) -> None:
+        """Keep what a render made, through helmstudio; what cannot be kept fails the job."""
+        try:
+            note = keep()
+        except Exception as exc:
+            job["status"], job["error"] = "failed", f"{output.name} could not be kept: {exc}"
+            self.log(job["session"], f"[studio] {output.name} could not be kept: {exc}", kind="err")
+            return
+        self.log(job["session"], note)
 
     def cancel(self, job_id: str) -> bool:
         with self.cond:
@@ -721,6 +1270,7 @@ class Runner:
                 self.jobs[job_id]["status"] = "cancelled"
                 if self.jobs[job_id].get("preview_dir"):
                     shutil.rmtree(self.jobs[job_id]["preview_dir"], ignore_errors=True)
+                self.state.job_finished(self.jobs[job_id])
                 self.emit(
                     "queue",
                     [self.summary(self.jobs[i]) for i in ([self.current] if self.current else []) + self.pending],
@@ -752,11 +1302,13 @@ class Runner:
                 with self.cond:
                     self.current = None
                     self.proc = None
+                self.state.job_finished(self.jobs[job_id])
                 self.emit("job", self.summary(self.jobs[job_id]))
                 self.emit("queue", self.queue_state())
 
     def _run(self, job: dict[str, Any]) -> None:
         job["status"], job["started"] = "running", now_iso()
+        self.state.job_started(job)
         started = time.monotonic()
         self.emit("job", self.summary(job))
         self.emit("queue", self.queue_state())
@@ -794,21 +1346,13 @@ class Runner:
         preview_dir = Path(job["preview_dir"]) if job.get("preview_dir") else None
         previews = list_previews(preview_dir) if preview_dir else []
         if job["output_kind"] == "mp4" and produced and output is not None:
-            sidecar = {
-                "task_id": job["task_id"], "label": job["label"], "created": job["created"],
-                "elapsed": job["elapsed"], "seed": job.get("seed"), "params": job["params"],
-                "argv": job["argv"], "probe": ffprobe(output),
-            }  # fmt: skip
-            if previews and preview_dir is not None:
-                sidecar["previews"] = [_rel(p) for p in previews]
-                sidecar["preview_dir"] = _rel(preview_dir)
-            write_json(output.with_suffix(".json"), sidecar)
+            self._keep(job, output, lambda: self.state.take_finished(job, output, previews))
             self.emit("takes", {"session": job["session"]})
+        if job["output_kind"] == "dir" and produced and output is not None and job["status"] == "done":
+            self._keep(job, output, lambda: self.state.folder_finished(job, output))
         if preview_dir is not None and (job["status"] != "done" or not previews):
             # Nothing owns these previews (no take, or none were written) — don't leave orphans.
             shutil.rmtree(preview_dir, ignore_errors=True)
-        elif job["output_kind"] == "dir" and produced:
-            self.emit("takes", {"session": job["session"]})
         state = job["status"]
         self.log(job["session"], f"[studio] {job['label']}: {state} in {job['elapsed']}s", kind=state)
 
@@ -822,7 +1366,7 @@ class Runner:
                 if path.name in seen:
                     continue
                 seen.add(path.name)
-                info = preview_info(path)
+                info = preview_info(path, self.state.stage)
                 job["preview_latest"] = info
                 job["preview_count"] = len(seen)
                 self.emit("preview", {"id": job["id"], "session": job["session"], "count": len(seen), **info})
@@ -855,6 +1399,7 @@ class Runner:
                 if changed and (progress.get("stage_key") != last_stage or time.monotonic() - last_progress > 0.25):
                     last_progress, last_stage = time.monotonic(), progress.get("stage_key")
                     self.emit("progress", {"id": job["id"], "progress": progress})
+                    self.state.job_progress(job, progress)
                 if not replace:
                     tail.append(line)
                     del tail[:-40]
@@ -944,11 +1489,16 @@ def list_previews(directory: Path) -> list[Path]:
     return [path for _, _, path in sorted(found)]
 
 
-def preview_info(path: Path) -> dict[str, Any]:
+def preview_info(path: Path, stage_dir: Path) -> dict[str, Any]:
+    """A live preview, as the page shows it: served from the stage directory at ``/stage/``."""
     m = PREVIEW_NAME.match(path.name)
     stage, step, total = (int(m.group(1) or 0), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
-    rel = _rel(path)
-    return {"url": f"/sfile/{rel}", "path": rel, "name": path.name, "stage": stage, "step": step, "total": total}
+    rel = _rel(path, stage_dir)
+    return {"url": f"/stage/{rel}", "path": rel, "name": path.name, "stage": stage, "step": step, "total": total}
+
+
+def _rel(path: Path, root: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def _quote(arg: str) -> str:
@@ -983,130 +1533,28 @@ def _ffmpeg(*argv: str, timeout: float = 120) -> None:
         raise ValueError(result.stderr.strip() or "ffmpeg failed")
 
 
-def extract_frame(state: State, session: str, take: str, position: str) -> dict[str, Any]:
-    src = state.resolve_media(session, "outputs", take)
-    dst = state.session_dir(session) / "inputs" / f"{Path(take).stem}-{position}.png"
+def grab_frame(src: Path, dst: Path, position: str) -> None:
+    """A video's first frame, or its last, as an image."""
     if position == "first":
         _ffmpeg("-i", str(src), "-frames:v", "1", str(dst))
     else:
         _ffmpeg("-sseof", "-0.1", "-i", str(src), "-frames:v", "1", "-update", "1", str(dst))
-    return {"name": dst.name}
 
 
-def extract_audio(state: State, session: str, take: str) -> dict[str, Any]:
-    src = state.resolve_media(session, "outputs", take)
-    dst = state.session_dir(session) / "inputs" / f"{Path(take).stem}-audio.wav"
+def grab_audio(src: Path, dst: Path) -> None:
+    """A video's audio track, as stereo audio."""
     _ffmpeg("-i", str(src), "-vn", "-ac", "2", str(dst))
-    return {"name": dst.name}
 
 
-def media_to_input(state: State, session: str, kind: str, name: str) -> dict[str, Any]:
-    src = state.resolve_media(session, kind, name)
-    dst = state.session_dir(session) / "inputs" / src.name
-    if dst.exists():
-        dst = dst.with_name(f"{dst.stem}-{uuid.uuid4().hex[:4]}{dst.suffix}")
-    shutil.copy2(src, dst)
-    return {"name": dst.name}
-
-
-# ---------------------------------------------------------------------------
-# timeline: browse clips across sessions, combine them into one video
-# ---------------------------------------------------------------------------
-
-
-def _rel(path: Path) -> str:
-    return path.resolve().relative_to(SESSIONS_DIR.resolve()).as_posix()
-
-
-def browse_timeline(state: State, session: str, rel: str) -> dict[str, Any]:
-    """List folders and video clips under the sessions root.
-
-    ``rel == ""`` opens the current session's outputs, ``"."`` the sessions
-    root, anything else is a path relative to the sessions root.
-    """
-    if rel == "":
-        target = state.ensure_session(session) / "outputs"
-    elif rel == ".":
-        target = SESSIONS_DIR.resolve()
-    else:
-        target = state.resolve_session_path(rel)
-    if not target.is_dir():
-        raise ValueError("directory not found")
-    root = SESSIONS_DIR.resolve()
-    dirs, files = [], []
-    for entry in sorted(target.iterdir(), key=lambda p: p.name):
-        if entry.name.startswith(".") or (entry.is_dir() and entry.name == "previews"):
-            continue
-        if entry.is_dir():
-            dirs.append({"name": entry.name, "path": _rel(entry)})
-        elif entry.suffix.lower() in VIDEO_EXTS:
-            rel_path = _rel(entry)
-            probe = cached_probe(entry)
-            files.append({
-                "name": entry.name, "path": rel_path, "size": entry.stat().st_size, "mtime": entry.stat().st_mtime,
-                "duration": probe.get("duration"), "width": probe.get("width"), "height": probe.get("height"),
-                "url": f"/sfile/{rel_path}", "thumb": f"/sthumb/{rel_path}?v={int(entry.stat().st_mtime)}",
-            })  # fmt: skip
-    resolved = target.resolve()
-    return {
-        "path": "." if resolved == root else _rel(resolved),
-        "parent": None if resolved == root else ("." if resolved.parent == root else _rel(resolved.parent)),
-        "dirs": dirs,
-        "files": files,
-    }
-
-
-def combine_timeline(state: State, session: str, clips: list[str], name: str) -> dict[str, Any]:
-    """Concatenate clips (paths relative to the sessions root) into ``<session>/timeline/<name>.mp4``.
-
-    Clips are letterboxed onto the largest canvas, resampled to 24 fps, and clips
-    without audio get matching silence so the audio track stays continuous. Sources
-    are only read, never modified.
-    """
-    if not clips:
-        raise ValueError("pick at least one clip")
-    if not which("ffmpeg"):
-        raise ValueError("ffmpeg is not on PATH")
-    sources = []
-    for rel in clips:
-        path = state.resolve_session_path(rel)
-        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTS:
-            raise ValueError(f"not a video clip: {rel}")
-        sources.append((path, ffprobe(path)))
-    width = max((p.get("width") or 0) for _, p in sources) or 704
-    height = max((p.get("height") or 0) for _, p in sources) or 448
-    width, height = width + width % 2, height + height % 2
-
-    out_dir = state.ensure_session(session) / "timeline"
-    stem = safe_name(name, f"timeline-{datetime.now():%m%d-%H%M%S}")
-    out = out_dir / f"{stem}.mp4"
-    counter = 1
-    while out.exists():
-        out = out_dir / f"{stem}-{counter}.mp4"
-        counter += 1
-
-    args: list[str] = []
-    for path, _ in sources:
-        args += ["-i", str(path)]
-    silent: dict[int, int] = {}
-    for i, (_, probe) in enumerate(sources):
-        if not probe.get("has_audio"):
-            silent[i] = len(sources) + len(silent)
-            args += ["-f", "lavfi", "-t", f"{probe.get('duration') or 1:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
-    filters, refs = [], ""
-    for i in range(len(sources)):
-        filters.append(
-            f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24[v{i}]"
-        )
-        filters.append(f"[{silent.get(i, i)}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{i}]")
-        refs += f"[v{i}][a{i}]"
-    filters.append(f"{refs}concat=n={len(sources)}:v=1:a=1[vout][aout]")
-    _ffmpeg(*args, "-filter_complex", ";".join(filters), "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k", str(out), timeout=600)  # fmt: skip
-    write_json(out.with_suffix(".json"), {"clips": clips, "created": now_iso(), "probe": ffprobe(out)})
-    return {"name": out.name}
+def receive(body: BinaryIO, length: int, dst: Path) -> None:
+    """Write ``length`` bytes of a request body to ``dst``, a megabyte at a time."""
+    with open(dst, "wb") as f:
+        while length > 0:
+            chunk = body.read(min(1 << 20, length))
+            if not chunk:
+                break
+            f.write(chunk)
+            length -= len(chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -1149,7 +1597,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b"{}")
 
     def _session(self, params: dict[str, Any]) -> str:
-        return safe_name(str(params.get("session") or self.state.active), "session-1")
+        return self.state.session_name(params.get("session"))
 
     def _refused(self) -> bool:
         """Answer and return True when the request fails ``request_guard``."""
@@ -1160,12 +1608,29 @@ class Handler(BaseHTTPRequestHandler):
         self._error(message, code)
         return True
 
+    def _proxied(self) -> bool:
+        """Serve a request under /helm/ through helmstudio's proxy: the page's SDK files, API calls and assets."""
+        if not urlparse(self.path).path.startswith(PREFIX):
+            return False
+        return self.state.proxy.handle_http(self)
+
     # routes ---------------------------------------------------------------
     def do_HEAD(self) -> None:
         self.do_GET()
 
+    def do_PUT(self) -> None:
+        if self._refused() or self._proxied():
+            return None
+        return self._error("not found", 404)
+
+    def do_PATCH(self) -> None:
+        self.do_PUT()
+
+    def do_DELETE(self) -> None:
+        self.do_PUT()
+
     def do_GET(self) -> None:
-        if self._refused():
+        if self._refused() or self._proxied():
             return None
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
@@ -1175,40 +1640,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html")
             if path.startswith("/static/"):
                 return self._static(path[len("/static/") :])
-            if path.startswith("/media/"):
-                _, _, session, kind, name = path.split("/", 4)
-                return self._file(self.state.resolve_media(session, kind, name), download="download" in query)
-            if path.startswith("/thumb/"):
-                _, _, session, kind, name = path.split("/", 4)
-                thumb = self.state.thumbnail(session, kind, name)
-                return self._file(thumb) if thumb else self._error("no thumbnail", 404)
-            if path.startswith("/sfile/"):
-                return self._file(self.state.resolve_session_path(path[len("/sfile/") :]), download="download" in query)
-            if path.startswith("/sthumb/"):
-                thumb = video_thumbnail(self.state.resolve_session_path(path[len("/sthumb/") :]))
-                return self._file(thumb) if thumb else self._error("no thumbnail", 404)
+            if path.startswith("/stage/"):
+                return self._file(self.state.resolve_stage_path(path[len("/stage/") :]))
             if path == "/api/timeline":
-                return self._json(self.state.list_media(self._session(query), "timeline"))
-            if path == "/api/timeline/browse":
-                return self._json(browse_timeline(self.state, self._session(query), query.get("path", "")))
+                return self._json(self.state.list_timeline(self._session(query)))
             if path == "/api/events":
                 return self._events()
             if path == "/api/config":
                 return self._json({
                     "model": self.state.model_info(), "sessions": self.state.sessions(),
-                    "active": self.state.active, "ffmpeg": bool(which("ffmpeg")), "repo": str(REPO_ROOT),
+                    "active": self.state.active, "ffmpeg": bool(which("ffmpeg")),
+                    "preferences": self.state.preferences(),
                 })  # fmt: skip
             if path == "/api/sessions":
                 return self._json({"sessions": self.state.sessions(), "active": self.state.active})
             if path == "/api/inputs":
-                return self._json(self.state.list_media(self._session(query), "inputs"))
+                return self._json(self.state.list_inputs(self._session(query)))
             if path == "/api/takes":
-                items = [t for t in self.state.list_media(self._session(query), "outputs") if t["kind"] == "video"]
-                return self._json(items)
+                return self._json(self.state.list_takes(self._session(query)))
             if path == "/api/queue":
                 return self._json(self.runner.queue_state())
             if path == "/api/terminal":
-                return self._json({"lines": self.state.terminal_tail(self._session(query))})
+                return self._json({"job": self.state.terminal_job(self._session(query))})
             return self._error("not found", 404)
         except ValueError as exc:
             return self._error(str(exc))
@@ -1218,7 +1671,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def do_POST(self) -> None:
-        if self._refused():
+        if self._refused() or self._proxied():
             return None
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
@@ -1250,50 +1703,33 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/session/activate":
                 return self._json(self.state.activate(session))
             if path == "/api/session/save":
-                write_json(self.state.ensure_session(session) / "setting.json", body.get("settings", {}))
+                self.state.save_settings(session, body.get("settings", {}))
+                return self._json({"ok": True})
+            if path == "/api/preferences":
+                changes = body.get("changes")
+                if not isinstance(changes, dict):
+                    raise ValueError("changes must be an object")
+                self.state.save_preferences(changes)
                 return self._json({"ok": True})
             if path == "/api/session/duplicate":
-                dst = self.state.session_dir(str(body.get("new_name", "")))
-                if dst.exists():
-                    return self._error("a session with that name already exists")
-                shutil.copytree(self.state.ensure_session(session), dst)
-                return self._json(self.state.activate(dst.name))
+                return self._json(self.state.duplicate_session(session, str(body.get("new_name", ""))))
             if path == "/api/session/delete":
-                target = self.state.session_dir(session)
-                if target.exists():
-                    shutil.rmtree(target)
-                remaining = self.state.sessions()
-                return self._json(self.state.activate(remaining[0] if remaining else "session-1"))
+                return self._json(self.state.delete_session(session))
             if path == "/api/inputs/delete":
-                target = self.state.resolve_media(session, "inputs", str(body.get("name")))
-                target.unlink(missing_ok=True)
-                target.with_suffix(target.suffix + ".json").unlink(missing_ok=True)
+                self.state.delete_input(session, str(body.get("name")))
                 return self._json({"ok": True})
             if path == "/api/takes/delete":
-                target = self.state.resolve_media(session, "outputs", str(body.get("name")))
-                preview_dir = read_json(target.with_suffix(".json"), {}).get("preview_dir")
-                if preview_dir:
-                    previews = self.state.resolve_session_path(preview_dir)
-                    if previews.parent == self.state.session_dir(session) / "previews" and previews.is_dir():
-                        shutil.rmtree(previews)
-                target.unlink(missing_ok=True)
-                target.with_suffix(".json").unlink(missing_ok=True)
+                self.state.delete_take(session, str(body.get("name")))
                 return self._json({"ok": True})
             if path == "/api/frame":
-                return self._json(extract_frame(self.state, session, str(body["take"]), body.get("position", "last")))
+                return self._json(self.state.frame(session, str(body["take"]), body.get("position", "last")))
             if path == "/api/audio":
-                return self._json(extract_audio(self.state, session, str(body["take"])))
+                return self._json(self.state.audio(session, str(body["take"])))
             if path == "/api/use-video":
                 kind = body.get("kind", "outputs")
-                return self._json(media_to_input(self.state, session, kind, str(body.get("name") or body["take"])))
-            if path == "/api/timeline/render":
-                result = combine_timeline(self.state, session, list(body.get("clips", [])), str(body.get("name", "")))
-                self.runner.emit("timeline", {"session": session, "name": result["name"]})
-                return self._json(result)
+                return self._json(self.state.use_video(session, kind, str(body.get("name") or body["take"])))
             if path == "/api/timeline/delete":
-                target = self.state.resolve_media(session, "timeline", str(body.get("name")))
-                target.unlink(missing_ok=True)
-                target.with_suffix(".json").unlink(missing_ok=True)
+                self.state.delete_timeline(session, str(body.get("name")))
                 return self._json({"ok": True})
             return self._error("not found", 404)
         except (ValueError, KeyError) as exc:
@@ -1306,75 +1742,22 @@ class Handler(BaseHTTPRequestHandler):
     # handlers -------------------------------------------------------------
     def _static(self, rel: str) -> None:
         target = (STATIC_DIR / rel).resolve()
-        if STATIC_DIR.resolve() not in target.parents or not target.is_file():
+        if STATIC_DIR.resolve() not in target.parents:
+            return self._error("not found", 404)
+        return self._file(target)
+
+    def _file(self, target: Path) -> None:
+        if not target.is_file():
             return self._error("not found", 404)
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype == "application/javascript":
             ctype += "; charset=utf-8"
         return self._send(200, target.read_bytes(), ctype)
 
-    def _file(self, target: Path, download: bool = False) -> None:
-        if not target.is_file():
-            return self._error("not found", 404)
-        size = target.stat().st_size
-        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        start, end = 0, size - 1
-        code = 200
-        if rng := re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "")):
-            if rng.group(1):
-                start = int(rng.group(1))
-                end = int(rng.group(2)) if rng.group(2) else size - 1
-            elif rng.group(2):
-                start = max(0, size - int(rng.group(2)))
-            end = min(end, size - 1)
-            if start > end:
-                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
-                self.send_header("Content-Range", f"bytes */{size}")
-                self.end_headers()
-                return None
-            code = 206
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(end - start + 1))
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        if download:
-            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(target.name)}")
-        if code == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.end_headers()
-        if self.command == "HEAD":
-            return None
-        with open(target, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
-            while remaining > 0:
-                chunk = f.read(min(1 << 16, remaining))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
-        return None
-
     def _upload(self, query: dict[str, str]) -> None:
-        session = self._session(query)
         original = Path(unquote(self.headers.get("X-Filename") or "upload")).name
-        stem, suffix = os.path.splitext(original)
-        dst = self.state.ensure_session(session) / "inputs" / f"{safe_name(stem, 'upload')}{suffix.lower()}"
-        if dst.exists():
-            dst = dst.with_name(f"{dst.stem}-{uuid.uuid4().hex[:4]}{dst.suffix}")
-        remaining = int(self.headers.get("Content-Length") or 0)
-        with open(dst, "wb") as f:
-            while remaining > 0:
-                chunk = self.rfile.read(min(1 << 20, remaining))
-                if not chunk:
-                    break
-                f.write(chunk)
-                remaining -= len(chunk)
-        meta = {"original_name": original, "probe": ffprobe(dst) if media_kind(dst.name) != "file" else {}}
-        write_json(dst.with_suffix(dst.suffix + ".json"), meta)
-        return self._json({"name": dst.name, "kind": media_kind(dst.name), **meta})
+        length = int(self.headers.get("Content-Length") or 0)
+        return self._json(self.state.save_upload(self._session(query), original, self.rfile, length))
 
     def _events(self) -> None:
         self.send_response(200)
@@ -1420,12 +1803,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    state = State(args.model, args.gemma)
+    try:
+        client, proxy = connect()
+    except UnavailableError as exc:
+        sys.exit(f"ltx studio: {exc}")
+    state = State(args.model, args.gemma, client, proxy)
     Handler.state = state
     Handler.runner = Runner(state)
     Handler.allowed_hosts = {h.strip().lower() for h in [args.host, *args.allow_host.split(",")] if h.strip()}
     httpd = StudioServer((args.host, args.port), Handler)
     print(f"ltx studio on http://{args.host}:{args.port}  (model: {args.model or 'not set'})", flush=True)
+    print(f"helmstudio keeps everything ltx studio keeps; scratch in {state.stage}", flush=True)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("warning: no authentication — anyone who can reach this port can run jobs", flush=True)
     with contextlib.suppress(KeyboardInterrupt):

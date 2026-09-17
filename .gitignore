@@ -63,6 +63,5 @@ wandb/
 *.webp
 *.exr
 
-# ltx studio sessions (inputs, takes, UI state)
-/web/sessions/*
-!/web/sessions/.keep
+# helmstudio: helm dev keeps everything ltx studio keeps beside its manifest
+.helm/

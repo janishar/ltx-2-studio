@@ -1,0 +1,65 @@
+# ltx studio's manifest for helmstudio: the same studio the registry points at,
+# described by its own repository, beside the code it runs.
+id: ltx-studio
+name: ltx studio
+description: MLX video and audio generation against a user-selected LTX checkpoint.
+kinds: [video, audio]
+hue: { dark: "#5b8def", light: "#2f5fc4" }
+license: MIT
+repo: https://github.com/janishar/ltx-2-studio
+python: { version: "3.11" }
+peak_ram_gb: 21
+requires:
+  os: [darwin]
+  arch: [arm64]
+  tools: [uv]
+  ram_gb: 64
+  disk_gb: 90
+runtime:
+  framework: mlx
+  backends: [metal]
+  precision: [bf16, int8]
+  language: python
+# ltx studio keeps nothing of its own; helmstudio keeps it all (State in web/server.py):
+# sessions with their settings and inputs, and the page's preferences (kv); the
+# folders training tools write (records); inputs and takes (assets); takes with
+# their provenance (gallery); sequences (timeline); renders with their logs (jobs).
+capabilities: [kv, records, assets, gallery, timeline, jobs]
+storage:
+  collections:
+    - { name: folders, index: [session_id] }
+sdk: { runtime: "^1", ui: "^1", css: "^1" }
+network: [huggingface.co, cdn-lfs.huggingface.co]
+build:
+  # --locked: install exactly uv.lock, and fail rather than rewrite it.
+  - name: Sync dependencies
+    run: uv sync --locked --all-extras
+weights:
+  - name: ltx
+    repo: Lightricks/LTX-2.5
+    dest: LTX-2.5
+    files:
+      - diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors
+      - text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors
+      - vae/ltx-2.5-video-vae-conv-bf16.safetensors
+      - vae/ltx-2.5-audio-vae-bf16.safetensors
+      - latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors
+      - model_patches/ltx-2.5-duration-head-bf16.safetensors
+    size_gb: 71
+  - name: ltx_dev_transformer
+    repo: Lightricks/LTX-2.5
+    dest: LTX-2.5
+    files: ["diffusion_models/ltx-2.5-22b-dev-transformer-bf16.safetensors"]
+    size_gb: 42
+    optional: true
+processes:
+  - name: studio
+    role: main
+    heavy: true
+    cwd: web
+    # Not `uv run`, which would sync the environment at every launch.
+    cmd: "python server.py --host 127.0.0.1 --port {port} --model {models.ltx}"
+    port: { prefer: 8720 }
+    health: { tcp: true, timeout_s: 30, interval_s: 2 }
+    busy: { path: /api/queue }
+    ui: /

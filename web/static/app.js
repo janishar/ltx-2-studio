@@ -1,6 +1,7 @@
 // ltx studio front end — vanilla JS, no build step.
 // Task definitions live in tasks.js; this file renders them, builds the
-// ltx-2-mlx argument list, and talks to server.py.
+// ltx-2-mlx argument list, talks to server.py, and puts helmstudio's
+// components on the page.
 
 "use strict";
 
@@ -12,6 +13,7 @@ const S = {
   model: {},
   session: null,
   sessions: [],
+  preferences: {},       // side panel, terminal height, notifications: helmstudio keeps them (/api/config)
   inputs: [],
   takes: [],
   taskId: "t2v",
@@ -30,7 +32,6 @@ const S = {
   selectedTake: null,
   timeline: [],
   selectedTimeline: null,
-  lastLogReplace: false,
   followPreview: true,
   livePreview: null,
   scrub: null,
@@ -654,160 +655,9 @@ async function uploadFiles(files) {
   for (const a of added) { const item = inputByName(a.name); if (item) fillSlot(item); }
 }
 
-// ── timeline (combined clips, follows h3 studio) ─────────────────────────
-
-const TL = { seq: [], browse: null, dragFrom: null };
-
-function openTimelineModal() {
-  TL.seq = [];
-  renderSequence();
-  $("timelineOutputName").value = "";
-  $("timelineRenderStatus").textContent = "";
-  if (S.timeline[0]) showReview(S.timeline[0]);
-  else clearReview();
-  $("timelineModal").hidden = false;
-  browseTo("");
-}
-
-function closeTimelineModal() {
-  $("timelineModal").hidden = true;
-  $("timelineReviewVideo").pause();
-}
-
-function showReview(item) {
-  const video = $("timelineReviewVideo");
-  video.src = item.url;
-  video.load();
-  video.classList.add("on");
-  $("timelineReviewEmpty").hidden = true;
-}
-
-function clearReview() {
-  const video = $("timelineReviewVideo");
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-  video.classList.remove("on");
-  $("timelineReviewEmpty").hidden = false;
-}
-
-async function browseTo(path) {
-  try {
-    TL.browse = await api(`/api/timeline/browse?session=${encodeURIComponent(S.session)}&path=${encodeURIComponent(path)}`);
-  } catch (e) {
-    $("timelineRenderStatus").textContent = e.message;
-    return;
-  }
-  renderBreadcrumb();
-  renderBrowser();
-}
-
-function renderBreadcrumb() {
-  const crumbs = [el("button", { type: "button", text: "sessions", onclick: () => browseTo(".") })];
-  let acc = "";
-  for (const part of TL.browse.path === "." ? [] : TL.browse.path.split("/").filter(Boolean)) {
-    acc = acc ? `${acc}/${part}` : part;
-    const target = acc;
-    crumbs.push(el("span", { class: "sep", text: "/" }), el("button", { type: "button", text: part, onclick: () => browseTo(target) }));
-  }
-  $("timelineBreadcrumb").replaceChildren(...crumbs);
-}
-
-function renderBrowser() {
-  const data = TL.browse;
-  const items = [];
-  if (data.parent !== null && data.parent !== undefined) {
-    items.push(el("div", { class: "browse-dir", onclick: () => browseTo(data.parent) }, el("div", { class: "icon", text: "⬅" }), el("div", { class: "nm", text: ".." })));
-  }
-  for (const d of data.dirs) {
-    items.push(el("div", { class: "browse-dir", onclick: () => browseTo(d.path) }, el("div", { class: "icon", text: "📁" }), el("div", { class: "nm", text: d.name })));
-  }
-  for (const f of data.files) {
-    const count = TL.seq.filter((c) => c.path === f.path).length;
-    const meta = [f.duration ? `${f.duration.toFixed(2)}s` : "", f.width ? `${f.width}×${f.height}` : ""].filter(Boolean).join(" · ");
-    items.push(el("div", { class: `browse-file${count ? " selected" : ""}`, title: f.path, onclick: () => addClip(f) },
-      el("div", { class: "thumb" }, el("img", { src: f.thumb, alt: "", loading: "lazy" })),
-      el("div", { class: "nm", text: f.name }),
-      el("div", { class: "meta", text: meta }),
-      count ? el("div", { class: "pickcount", text: String(count) }) : null));
-  }
-  if (!data.dirs.length && !data.files.length) items.push(el("div", { class: "browser-empty", text: "No videos in this directory." }));
-  $("timelineBrowserList").replaceChildren(...items);
-}
-
-function addClip(f) {
-  TL.seq.push({ path: f.path, name: f.name, duration: f.duration, thumb: f.thumb });
-  renderSequence();
-  renderBrowser();
-}
-
-function removeClip(index) {
-  TL.seq.splice(index, 1);
-  renderSequence();
-  if (TL.browse) renderBrowser();
-}
-
-function reorderClip(from, to) {
-  if (from === to || from === null || to === null) return;
-  const [moved] = TL.seq.splice(from, 1);
-  TL.seq.splice(to, 0, moved);
-  renderSequence();
-}
-
-function renderSequence() {
-  const track = $("timelineTrack");
-  $("timelinePlaceholder").hidden = TL.seq.length > 0;
-  const total = TL.seq.reduce((sum, c) => sum + (c.duration || 0), 0);
-  $("timelineQueueTotal").textContent = TL.seq.length ? `${TL.seq.length} · ${total.toFixed(1)}s` : "";
-  const nodes = TL.seq.map((item, index) => {
-    const node = el("div", { class: "timeline-item", draggable: "true" },
-      el("div", { class: "drag-handle", text: "⠿" }),
-      el("div", { class: "seq", text: String(index + 1) }),
-      el("img", { src: item.thumb, alt: "" }),
-      el("div", { class: "info" },
-        el("div", { class: "nm", text: item.name, title: item.path }),
-        el("div", { class: "meta", text: item.duration ? `${item.duration.toFixed(2)}s` : "" })),
-      el("button", { class: "remove", type: "button", text: "✕", title: "Remove from queue", onclick: () => removeClip(index) }));
-    node.addEventListener("dragstart", (e) => { TL.dragFrom = index; node.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(index)); });
-    node.addEventListener("dragend", () => { node.classList.remove("dragging"); TL.dragFrom = null; [...track.children].forEach((c) => c.classList.remove("drag-over")); });
-    node.addEventListener("dragover", (e) => { if (TL.dragFrom === null) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; node.classList.add("drag-over"); });
-    node.addEventListener("dragleave", () => node.classList.remove("drag-over"));
-    node.addEventListener("drop", (e) => { e.preventDefault(); node.classList.remove("drag-over"); reorderClip(TL.dragFrom, index); });
-    return node;
-  });
-  nodes.push(el("div", { class: "timeline-add-slot", text: TL.seq.length ? "+ pick another clip on the left" : "+ pick a clip on the left to start" }));
-  track.replaceChildren(...nodes);
-  $("renderTimeline").disabled = TL.seq.length === 0;
-}
-
-async function combineTimeline() {
-  if (!TL.seq.length) return;
-  const clips = TL.seq.map((c) => c.path);
-  $("renderTimeline").disabled = true;
-  $("timelineRenderStatus").textContent = `Combining ${clips.length} clip${clips.length > 1 ? "s" : ""}…`;
-  appendLog(`$ combine ${clips.join(" + ")}`, false, "cmd");
-  try {
-    const { name } = await api("/api/timeline/render", { session: S.session, clips, name: $("timelineOutputName").value.trim() });
-    appendLog(`[studio] combined video saved as timeline/${name}`, false, "done");
-    $("timelineRenderStatus").textContent = `Saved ${name}`;
-    await loadTimeline();
-    const item = S.timeline.find((t) => t.name === name);
-    if (item) { showReview(item); $("timelineReviewVideo").play().catch(() => {}); }
-    TL.seq = [];
-    renderSequence();
-    if (TL.browse) renderBrowser();
-  } catch (e) {
-    appendLog(`[studio] combine failed: ${e.message}`, false, "failed");
-    $("timelineRenderStatus").textContent = `Failed: ${e.message}`;
-  } finally {
-    $("renderTimeline").disabled = TL.seq.length === 0;
-  }
-}
-
 // ── queue, progress, terminal ────────────────────────────────────────────
 
 const STAGES = [["encode", "Encode"], ["load", "Load"], ["denoise", "Denoise"], ["decode", "Decode"], ["save", "Save"]];
-const NOTIFY_KEY = "ltxstudio-notify";
 let elapsedTimer = null;
 
 const isActive = (job) => job.status === "running" || job.status === "cancelling";
@@ -897,6 +747,7 @@ function renderRunning(job) {
 function onJobEvent(job) {
   const idx = S.queue.findIndex((j) => j.id === job.id);
   if (idx >= 0) { S.queue[idx] = job; renderQueue(S.queue); }
+  if (job.status === "running" && job.session === S.session && job.helm_job) showTerminalJob(job.helm_job);
   noteBatchJob(job);
   if (job.status === "failed") {
     toast(`${job.label} failed: ${job.error || "unknown error"}`, { kind: "error", hint: job.hint || "", timeout: 15000 });
@@ -907,14 +758,17 @@ function onJobEvent(job) {
   }
 }
 
+function notificationsOn() {
+  return S.preferences.notify === true && "Notification" in window && Notification.permission === "granted";
+}
+
 function notify(title, body) {
-  const enabled = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false);
-  if (!enabled || !("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
+  if (!notificationsOn() || !document.hidden) return;
   try { new Notification(title, { body }); } catch (e) { /* notifications unavailable */ }
 }
 
 function renderNotifyButton() {
-  const on = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false) && "Notification" in window && Notification.permission === "granted";
+  const on = notificationsOn();
   $("notifyButton").classList.toggle("on", on);
   $("notifyButton").setAttribute("aria-pressed", String(on));
   $("notifyButton").title = on ? "Notifications on — click to turn off" : "Notify me when a render finishes while this tab is in the background";
@@ -922,43 +776,29 @@ function renderNotifyButton() {
 
 async function toggleNotify() {
   if (!("Notification" in window)) { toast("This browser doesn't support notifications."); return; }
-  const on = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false);
-  if (on) {
-    safeStorage(() => localStorage.setItem(NOTIFY_KEY, "0"));
+  if (S.preferences.notify === true) {
+    savePreference("notify", false);
   } else {
     const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
     if (permission !== "granted") { toast("Notifications are blocked for this page in the browser settings."); return; }
-    safeStorage(() => localStorage.setItem(NOTIFY_KEY, "1"));
+    savePreference("notify", true);
     toast("You'll get a notification when a render finishes while this tab is in the background.", { kind: "ok", timeout: 4000 });
   }
   renderNotifyButton();
 }
 
-function logClass(line, kind) {
-  if (kind === "cmd" || line.startsWith("$ ")) return "cmdline";
-  if (kind) return kind;
-  return /^\[studio\].*\b(failed|cancelled)\b/.test(line) ? "failed" : "";
+/** The terminal is helm-terminal, streaming one render's log from helmstudio, which keeps it. */
+function showTerminalJob(job) {
+  const terminal = $("terminal");
+  if (!job) terminal.removeAttribute("job");
+  else if (terminal.getAttribute("job") !== job) terminal.setAttribute("job", job);
 }
 
-function appendLog(line, replace, kind) {
-  const out = $("terminalOutput");
-  if (replace && S.lastLogReplace && out.lastChild) {
-    out.lastChild.textContent = `${line}\n`;
-  } else {
-    out.append(el("span", { class: logClass(line, kind), text: `${line}\n` }));
-    while (out.childNodes.length > 4000) out.firstChild.remove();
-  }
-  S.lastLogReplace = !!replace;
-  if ($("followLog").checked) out.scrollTop = out.scrollHeight;
-}
-
-/** Replace the terminal with the session's saved log. */
+/** Show the log of the session's latest render; a render of the session that starts later takes its place. */
 async function loadTerminal() {
-  $("terminalOutput").replaceChildren();
-  S.lastLogReplace = false;
   try {
-    const { lines } = await api(`/api/terminal?session=${encodeURIComponent(S.session)}`);
-    for (const line of lines) appendLog(line, false);
+    const { job } = await api(`/api/terminal?session=${encodeURIComponent(S.session)}`);
+    showTerminalJob(job);
   } catch (e) { /* the log is a convenience */ }
 }
 
@@ -971,11 +811,8 @@ function connectEvents() {
     else if (type === "progress") {
       const job = S.queue.find((j) => j.id === data.id);
       if (job) { job.progress = data.progress; renderRunning(job); }
-    } else if (type === "log") {
-      if (!data.session || data.session === S.session) appendLog(data.line, data.replace, data.kind);
     } else if (type === "job") onJobEvent(data);
     else if (type === "takes" && data.session === S.session) loadTakes(true);
-    else if (type === "timeline" && data.session === S.session) loadTimeline();
     else if (type === "preview" && data.session === S.session) {
       const job = S.queue.find((j) => j.id === data.id);
       if (job) { job.preview_latest = data; job.preview_count = data.count; renderRunning(job); }
@@ -985,12 +822,9 @@ function connectEvents() {
   es.onerror = () => { $("lampText").textContent = "reconnecting…"; };
 }
 
-/** Drag the terminal's top edge to resize it; the height is remembered per browser. */
+/** Drag the terminal's top edge to resize it; the height is one of the page's preferences. */
 function bindTerminalResize() {
   const box = $("consoleContainer");
-  const key = "ltxstudio-terminal-height";
-  const saved = Number(safeStorage(() => localStorage.getItem(key), 0));
-  if (saved >= 120) box.style.height = `${saved}px`;
   let startY = 0, startHeight = 0, dragging = false;
   const handle = $("resizeHandle");
   handle.addEventListener("pointerdown", (e) => {
@@ -1005,7 +839,7 @@ function bindTerminalResize() {
     if (!dragging) return;
     dragging = false;
     document.body.classList.remove("resizing");
-    safeStorage(() => localStorage.setItem(key, String(box.offsetHeight)));
+    savePreference("terminalHeight", box.offsetHeight);
   };
   handle.addEventListener("pointerup", stop);
   handle.addEventListener("pointercancel", stop);
@@ -1132,13 +966,12 @@ function onGlobalKeydown(e) {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key === "Enter") {
     e.preventDefault();
-    if ($("sessionModal").hidden && $("modelModal").hidden && $("timelineModal").hidden) submit(e.shiftKey ? 3 : 1);
+    if ($("sessionModal").hidden && $("modelModal").hidden) submit(e.shiftKey ? 3 : 1);
     return;
   }
   if (e.key === "Escape") {
     let closed = false;
     document.querySelectorAll(".modal").forEach((modal) => { if (!modal.hidden) { modal.hidden = true; closed = true; } });
-    $("timelineReviewVideo").pause();
     if (!$("compare").hidden) { exitCompare(); closed = true; }
     if ([...document.querySelectorAll(".popmenu")].some((m) => !m.hidden)) { closePopmenus(); closed = true; }
     if (closed) e.preventDefault();
@@ -1167,6 +1000,214 @@ function onGlobalKeydown(e) {
     const li = document.querySelector(`#takeList > li[data-name="${CSS.escape(names[next])}"]`);
     if (li) li.scrollIntoView({ block: "nearest" });
   }
+}
+
+// ── helmstudio: its components, the theme, the gallery and the timeline ──
+//
+// ltx studio runs only under helmstudio or `helm dev`, and all of this comes
+// from helmstudio through the proxy server.py mounts at /helm/ — the browser
+// runtime and the components, as index.html links helm-css's tokens and this
+// studio's hue — so nothing of helmstudio's is copied into ltx studio, and the
+// page never holds the token. It
+//   - follows helmstudio's theme, which is the page's only theme;
+//   - gives the terminal (helm-terminal) the page's client;
+//   - shows the gallery of the takes this studio recorded (helm-gallery);
+//   - opens Create Timeline on helmstudio's timeline: a sequence helmstudio
+//     keeps, edited in helm-timeline — reorder, trim, dissolve, gain, undo —
+//     and exported from it, with the gallery as its picker.
+//
+// There is one helm-gallery on the page, shared by browsing and picking: each
+// gallery holds an event stream open, as the terminal does while a render
+// runs, and a page has six connections to its host.
+
+const HELM_SDK = "/helm/sdk/v1";
+// The frame rates a sequence can have, of which a new one takes the nearest to its first take's.
+const SEQUENCE_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60];
+
+function helmDialog(className, html) {
+  const d = document.createElement("dialog");
+  d.className = `helmstudio-dialog ${className}`;
+  d.innerHTML = html;
+  document.body.append(d);
+  return d;
+}
+
+// ── the gallery: browsing, and the timeline's picker ─────────────────────
+
+function galleryDialog() {
+  const d = helmDialog("helmstudio-gallery", `
+    <div class="helmstudio-head">
+      <h2 class="helmstudio-title">Gallery</h2>
+      <span class="helmstudio-status" role="status"></span>
+      <span class="helmstudio-spacer"></span>
+      <button class="ghost sm" type="button" data-act="close">Close</button>
+    </div>
+    <helm-gallery scope="self" kind="video"></helm-gallery>`);
+  const gallery = d.querySelector("helm-gallery");
+  const title = d.querySelector(".helmstudio-title");
+  const status = d.querySelector(".helmstudio-status");
+  let choose = null;
+
+  const finish = (item) => {
+    if (!choose) return;
+    const resolve = choose;
+    choose = null;
+    gallery.removeAttribute("picker");
+    title.textContent = "Gallery";
+    status.textContent = "";
+    resolve(item);
+  };
+  gallery.addEventListener("pick", (event) => {
+    const { item } = event.detail;
+    finish(item);
+    d.close();
+  });
+  d.addEventListener("close", () => finish(null));
+  d.querySelector('[data-act="close"]').addEventListener("click", () => d.close());
+
+  return {
+    browse() {
+      d.showModal();
+    },
+    /** Opens the gallery as a picker; resolves to the chosen item, or null. */
+    pick(purpose) {
+      finish(null);
+      title.textContent = purpose;
+      status.textContent = "Select a take, then Use this.";
+      gallery.setAttribute("picker", "");
+      d.showModal();
+      return new Promise((resolve) => {
+        choose = resolve;
+      });
+    },
+  };
+}
+
+// ── the timeline ─────────────────────────────────────────────────────────
+
+function timelineDialog(helm, picker) {
+  const d = helmDialog("helmstudio-timeline", `
+    <div class="helmstudio-head">
+      <h2 class="helmstudio-title">Timeline</h2>
+      <label class="helmstudio-label" for="helmstudioSequence">Sequence</label>
+      <select id="helmstudioSequence"></select>
+      <span class="helmstudio-status" role="status"></span>
+      <span class="helmstudio-spacer"></span>
+      <button class="ghost sm" type="button" data-act="new">New sequence</button>
+      <button class="ghost sm" type="button" data-act="close">Close</button>
+    </div>
+    <p class="helmstudio-empty" hidden>No sequence yet. New sequence starts one from a take.</p>
+    <helm-timeline editable hidden></helm-timeline>`);
+  const tl = d.querySelector("helm-timeline");
+  const which = d.querySelector("select");
+  const empty = d.querySelector(".helmstudio-empty");
+  const status = d.querySelector(".helmstudio-status");
+  const say = (text) => {
+    status.textContent = text;
+  };
+
+  // A clip is labelled by the take that made it: its task and its seed.
+  const labels = new Map();
+  async function learnLabels() {
+    let cursor = null;
+    do {
+      const page = await helm.gallery.query({ scope: "self", kind: "video", limit: 200, cursor });
+      for (const item of page.items || []) {
+        const seed = item.params && item.params.seed != null ? ` · seed ${item.params.seed}` : "";
+        labels.set(item.asset_id, `${item.title || "take"}${seed}`);
+      }
+      cursor = page.next_cursor || null;
+    } while (cursor);
+  }
+  tl.labelFor = (clip) => labels.get(clip.asset_id) || "";
+
+  async function load(selectId) {
+    const page = await helm.timeline.list({ limit: 50 });
+    const sequences = page.items || [];
+    empty.hidden = sequences.length > 0;
+    tl.hidden = sequences.length === 0;
+    which.hidden = sequences.length === 0;
+    which.replaceChildren(...sequences.map((s) => new Option(`${s.name} · r${s.revision}`, s.id)));
+    const chosen = sequences.find((s) => s.id === selectId) || sequences[0];
+    if (!chosen) return;
+    which.value = chosen.id;
+    await learnLabels().catch(() => {});
+    if (tl.getAttribute("timeline") !== chosen.id) tl.setAttribute("timeline", chosen.id);
+  }
+
+  which.addEventListener("change", () => tl.setAttribute("timeline", which.value));
+  tl.addEventListener("changed", (event) => {
+    const t = event.detail.timeline;
+    const option = [...which.options].find((o) => o.value === t.id);
+    if (option) option.textContent = `${t.name} · r${t.revision}`;
+  });
+  tl.addEventListener("exported", () => {
+    say("Exported — the sequence is in the gallery.");
+    loadTimeline(); // the Timeline tab lists exported sequences (takes.js)
+  });
+
+  // What goes on a sequence is this page's to choose: the editor asks, the
+  // gallery answers.
+  tl.addEventListener("add-request", async () => {
+    const item = await picker.pick("Add a take to the sequence");
+    if (item) await tl.append(item.asset_id);
+  });
+
+  d.querySelector('[data-act="new"]').addEventListener("click", async () => {
+    const item = await picker.pick("Start a sequence from a take");
+    if (!item) return;
+    const asset = item.asset || {};
+    if (!asset.width || !asset.height) {
+      say("That take has no dimensions to build a sequence at.");
+      return;
+    }
+    const want = asset.fps || 24;
+    const fps = SEQUENCE_RATES.reduce((best, rate) => (Math.abs(rate - want) < Math.abs(best - want) ? rate : best));
+    try {
+      const made = await helm.timeline.create({
+        name: `ltx sequence ${new Date().toLocaleString()}`,
+        target: { width: asset.width, height: asset.height, fps },
+        clips: [{ asset_id: item.asset_id }],
+      });
+      say("");
+      await load(made.id);
+    } catch (err) {
+      say(`The sequence could not be made: ${err.message}`);
+    }
+  });
+  d.querySelector('[data-act="close"]').addEventListener("click", () => d.close());
+
+  return {
+    async open() {
+      d.showModal();
+      say("");
+      try {
+        await load(which.value);
+      } catch (err) {
+        empty.hidden = false;
+        empty.textContent = `The sequences could not be read: ${err.message}`;
+      }
+    },
+  };
+}
+
+/** Connect to helmstudio: its runtime and components, the theme, the page's client, and the dialogs. */
+async function connectHelmstudio() {
+  const { connect, themeBridge } = await import(`${HELM_SDK}/helm-runtime.js`);
+  await import(`${HELM_SDK}/helm-ui.js`);
+  themeBridge();
+  const helm = (window.helm = connect());
+  // The terminal may have been given its render before there was a client.
+  $("terminal").client = helm;
+
+  const gallery = galleryDialog();
+  const timeline = timelineDialog(helm, gallery);
+
+  const galleryButton = $("helmGalleryButton");
+  galleryButton.hidden = false;
+  galleryButton.addEventListener("click", () => gallery.browse());
+
+  $("timelineButton").addEventListener("click", () => timeline.open());
 }
 
 // ── wiring ───────────────────────────────────────────────────────────────
@@ -1245,7 +1286,7 @@ function bindCommon() {
   })));
 }
 
-function showSidePanel(which) {
+function showSidePanel(which, remember = true) {
   document.querySelectorAll(".sidetabs button").forEach((b) => {
     const on = b.dataset.side === which;
     b.classList.toggle("on", on);
@@ -1253,18 +1294,13 @@ function showSidePanel(which) {
   });
   $("takesPanel").hidden = which !== "takes";
   $("timelinePanel").hidden = which !== "timeline";
-  safeStorage(() => localStorage.setItem("ltxstudio-side", which));
+  if (remember) savePreference("side", which);
 }
 
 function bindChrome() {
   $("taskSelect").addEventListener("change", (e) => { S.taskId = e.target.value; $("errors").hidden = true; renderTask(); saveSettings(); });
   $("renderBtn").addEventListener("click", () => submit(1));
   $("queueSeedsBtn").addEventListener("click", () => submit(3));
-  $("clearLog").addEventListener("click", () => { $("terminalOutput").replaceChildren(); S.lastLogReplace = false; });
-  $("timelineButton").addEventListener("click", openTimelineModal);
-  $("closeTimeline").addEventListener("click", closeTimelineModal);
-  $("clearTimeline").addEventListener("click", () => { TL.seq = []; renderSequence(); if (TL.browse) renderBrowser(); });
-  $("renderTimeline").addEventListener("click", combineTimeline);
   $("notifyButton").addEventListener("click", toggleNotify);
 
   document.querySelectorAll(".sidetabs button").forEach((b) => b.addEventListener("click", () => showSidePanel(b.dataset.side)));
@@ -1288,7 +1324,7 @@ function bindChrome() {
   $("sessionNameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("confirmSession").click(); });
   $("deleteSession").addEventListener("click", async () => {
     closePopmenus();
-    if (!confirm(`Permanently delete session "${S.session}" with all its inputs, takes, previews and timeline videos?\n\nThis cannot be undone.`)) return;
+    if (!confirm(`Delete session "${S.session}" with its settings and inputs?\n\nIts takes stay in helmstudio's gallery.`)) return;
     try {
       const res = await api("/api/session/delete", { session: S.session });
       await activateSession(res.name);
@@ -1329,36 +1365,40 @@ function bindChrome() {
   drop.addEventListener("drop", (e) => { e.preventDefault(); uploadFiles([...e.dataTransfer.files]); });
   $("fileInput").addEventListener("change", (e) => { uploadFiles([...e.target.files]); e.target.value = ""; });
 
-  document.querySelectorAll("#themeSwitch button").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.theme)));
   document.addEventListener("keydown", onGlobalKeydown);
   document.addEventListener("click", () => closePopmenus());
   bindTerminalResize();
 }
 
-function setTheme(theme) {
-  safeStorage(() => localStorage.setItem("ltxstudio-theme", theme));
-  if (theme === "system") delete document.documentElement.dataset.theme;
-  else document.documentElement.dataset.theme = theme;
-  document.querySelectorAll("#themeSwitch button").forEach((b) => b.classList.toggle("on", b.dataset.theme === theme));
+/** Remember one of the page's preferences. helmstudio keeps them, like everything else ltx studio keeps. */
+function savePreference(key, value) {
+  S.preferences[key] = value;
+  api("/api/preferences", { changes: { [key]: value } }).catch(() => {});
+}
+
+function applyPreferences(preferences) {
+  S.preferences = preferences || {};
+  showSidePanel(S.preferences.side === "timeline" ? "timeline" : "takes", false);
+  if (S.preferences.terminalHeight >= 120) $("consoleContainer").style.height = `${S.preferences.terminalHeight}px`;
+  renderNotifyButton();
 }
 
 async function init() {
-  setTheme(safeStorage(() => localStorage.getItem("ltxstudio-theme"), null) || "system");
-  showSidePanel(safeStorage(() => localStorage.getItem("ltxstudio-side"), null) === "timeline" ? "timeline" : "takes");
   renderTaskSelect();
   bindCommon();
   bindChrome();
-  renderNotifyButton();
   syncCommonInputs();
   const cfg = await api("/api/config");
+  applyPreferences(cfg.preferences);
   S.sessions = cfg.sessions;
   applyModel(cfg.model);
   connectEvents();
   await activateSession(cfg.active);
   if (!cfg.ffmpeg) {
-    toast("ffmpeg is not on PATH — frame/audio extraction, thumbnails and the timeline are disabled.", { kind: "error", hint: "Install it with `brew install ffmpeg` and restart the studio.", timeout: 0 });
+    toast("ffmpeg is not on PATH — media probing and frame/audio extraction are disabled.", { kind: "error", hint: "Install it with `brew install ffmpeg` and restart the studio.", timeout: 0 });
   }
   if (!cfg.model.configured) $("modelButton").click();
 }
 
 init().catch((e) => { console.error(e); toast(`Failed to start: ${e.message}`, { kind: "error", timeout: 0 }); });
+connectHelmstudio().catch((e) => { console.error(e); toast(`helmstudio's components did not load: ${e.message}`, { kind: "error", timeout: 0 }); });

@@ -4,57 +4,84 @@ A local web control surface for every `ltx-2-mlx` command — text, image, audio
 and video to video, retake/extend, keyframes, IC-LoRA control, prompt tools and
 training — from one browser tab, with nothing sent off your machine.
 
-It is a Python **stdlib-only** server (`server.py`, no FastAPI/uvicorn, so it
-runs in the repo's existing uv environment) plus a no-build-step vanilla JS
-front end (`static/`). The layout and palette follow
-[h3 studio](https://github.com/janishar/h3c-studio); the declarative task
-catalog follows AuK Studio.
+It is a Python server (`server.py`, no web framework, so it runs in the repo's
+existing uv environment) plus a no-build-step vanilla JS front end (`static/`).
+The layout follows [h3 studio](https://github.com/janishar/h3c-studio), and every
+colour, font and radius is a helm-css token, so the page follows helmstudio's
+light and dark themes and wears the studio's hue from `helmstudio.yaml`; the
+declarative task catalog follows AuK Studio.
+
+It keeps nothing of its own: [helmstudio](https://github.com/janishar/helmstudio)
+keeps everything, through its runtime SDK — see
+[Where things are kept](#where-things-are-kept).
 
 ## Running
 
+ltx studio runs under helmstudio, which starts it from `helmstudio.yaml`, or on
+its own under `helm dev`, helmstudio's CLI, which keeps everything in `.helm/`
+beside the manifest. Started any other way it exits and says so. `web/run.sh`
+starts it under helm dev, from a terminal or from VS Code; extra arguments go to
+helm dev:
+
 ```bash
-bash web/run.sh --model /path/to/model            # port 8720, 127.0.0.1
-# or
-LTX_MODEL=/path/to/model uv run python web/server.py --port 8720
+HELMSTUDIO_REPO=~/helmstudio LTX_MODEL=~/models/LTX-2.5 bash web/run.sh    # port 8720, 127.0.0.1
 ```
 
-Open http://127.0.0.1:8720. `--model` accepts an mlx-forge pack directory, a
-directory of the official Lightricks LTX-2.5 files (converted and quantized on
-load, see the main README), or a Hugging Face repo id. It can also be changed
-from the **Model** button, which shows what the model can run (distilled / dev
-transformer, LTX-2.5 vs 2.3). `--gemma` sets the Gemma 3 repo used by LTX-2.3
-packs and prompt enhancement.
+- `HELMSTUDIO_REPO`, a helmstudio checkout: each run builds `helm` and installs
+  `helm-runtime-sdk` into `.venv` from it, for as long as neither comes from a
+  release. Without it, `helm` must be on `PATH` and `helm-runtime-sdk`
+  installed in `.venv`.
+- `LTX_MODEL`, a local directory of the official Lightricks LTX-2.5 files, in
+  any layout: each file `helmstudio.yaml` declares is linked to the file of the
+  same name there, and helm dev uses the links. Without it, helm dev downloads
+  the files.
+- `HELMSTUDIO_SDKS`, where `helm`, the links and the copy of
+  `helm-runtime-sdk` it builds from go: `/tmp/helmstudio-sdks` by default. The
+  checkout itself is only read.
+- `LTX_DEBUGPY`, a port: the server listens there for a Python debugger, with
+  debugpy installed into `.venv` the first time. helm dev passes the studio a
+  restricted environment, so the variable cannot reach the server itself;
+  instead helm dev is given an environment whose `python` is `.venv`'s, run
+  under debugpy.
+
+`bash web/run.sh stop` stops the studio the script last started. Starting it
+again stops the previous one first.
+
+Open http://127.0.0.1:8720. The model can also be changed from the **Model**
+button, which shows what the model can run (distilled / dev transformer, LTX-2.5
+vs 2.3); `--gemma` sets the Gemma 3 repo used by LTX-2.3 packs and prompt
+enhancement.
 
 There is **no authentication** — keep it bound to `127.0.0.1` (see [Security](#security)).
 
+`helmstudio.yaml` starts the server with these flags:
+
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--model` | `$LTX_MODEL` | Model directory, official LTX-2.5 files or Hugging Face repo id. |
+| `--model` | `{models.ltx}` | The `ltx` weight helmstudio resolved. Also a model directory, official LTX-2.5 files or Hugging Face repo id. |
 | `--gemma` | `$LTX_GEMMA` | Gemma 3 repo for LTX-2.3 packs and prompt enhancement. |
 | `--host` | `127.0.0.1` | Bind address. A warning is printed for anything but loopback. |
-| `--port` | `8720` | Bind port. |
+| `--port` | `{port}` | Bind port; helmstudio prefers 8720. |
 | `--allow-host` | *(none)* | Extra `Host` names to accept, comma-separated. IP addresses and `localhost` are always accepted. |
 
 ### Run from VS Code
 
-`.vscode/launch.json` ships ready-made configurations for the Python Debugger
-extension (`Cmd+Shift+D`, pick one, `F5`). They use the repo's `.venv`
-interpreter, so no setup beyond `uv sync` is needed.
-
-| Configuration | What it does |
-| --- | --- |
-| **ltx studio (dev)** | Runs `web/server.py` on `127.0.0.1:8720` — the everyday config. Static files are served uncached, so front-end edits only need a browser refresh; restart for server changes. |
-| **ltx studio (custom paths)** | Same, but prompts for the model, Gemma repo and port instead of using the hardcoded model path. |
-| **ltx studio (debug - step into ltx packages)** | `justMyCode: false`, for stepping into `ltx_core_mlx` / `ltx_pipelines_mlx` from the server. Render jobs run in child processes, so breakpoints inside a render need the **ltx-2-mlx: generate** config instead. |
-| **ltx studio (LAN - 0.0.0.0, no auth)** | Binds to all interfaces — anyone who can reach the port can run jobs. |
-| **ltx-run: modes** | Prints which tasks the chosen model supports. |
-| **ltx-2-mlx: generate (prompt)** | Runs one distilled generation in-process under the debugger (prompts for model and prompt), writing `outputs/vscode-generate.mp4`. |
-| **pytest: fast suite** | `pytest -m "not slow"` under the debugger. |
-
-All except "custom paths" and the prompting configs have `--model` hardcoded to
-a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
-`.vscode/tasks.json` adds **run: ltx studio**, **setup: uv sync**,
+**ltx studio** starts the studio with `web/run.sh`, with `HELMSTUDIO_REPO`
+and `LTX_MODEL` set for this machine in `.vscode/tasks.json`, and attaches the
+Python debugger to the server; stopping the session stops the studio. The task
+**run: ltx studio** starts it without the debugger. Static files are served
+uncached, so front-end edits only need a browser refresh; restart for server
+changes. The other tasks are **setup: uv sync** (with
+`--inexact`, so it keeps `helm-runtime-sdk`, which `uv.lock` does not have yet),
 **test: fast suite** (default test task) and **lint: ruff** (default build task).
+
+| Configuration (`Cmd+Shift+D`, `F5`) | What it does |
+| --- | --- |
+| **ltx studio** | Runs the task **debug: ltx studio** (`web/run.sh` with `LTX_DEBUGPY=5678`) and attaches to the server once it is up; ending the session runs **stop: ltx studio**. Host and port are the manifest's, `127.0.0.1:8720`. |
+| **ltx studio (step into ltx packages)** | The same, with `justMyCode` off. |
+| **ltx-run: modes** | Prints which tasks the chosen model supports. |
+| **ltx-2-mlx: generate (prompt)** | Runs one distilled generation in-process under the debugger (prompts for model and prompt), writing `outputs/vscode-generate.mp4`. Render jobs run in child processes, so this is the way to put breakpoints inside a render. |
+| **pytest: fast suite** | `pytest -m "not slow"` under the debugger. |
 
 ## Using it
 
@@ -63,8 +90,8 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
    keyframe interpolation), Control (IC-LoRA control, HDR, lip dub), Tools
    (prompt enhance, model info) and Training (slice, preprocess, train). Tasks
    the current model can't run explain why and stay disabled.
-2. Drop or browse **inputs** (images, videos, audio). They land in the
-   session's `inputs/`; click one to fill the next empty slot of the task, or
+2. Drop or browse **inputs** (images, videos, audio). helmstudio keeps them as
+   the session's inputs; click one to fill the next empty slot of the task, or
    pick it from a slot's menu.
 3. Fill in the prompt, canvas (see [Canvas size](#canvas-size)), duration on
    the 8k+1 frame grid (or LTX-2.5 auto duration), seed, and task options. **Advanced** holds
@@ -99,11 +126,14 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
    or control) or its **Last frame** into inputs. The **⋮** menu adds the first
    frame, the audio track (for audio → video), **Previews (N)**, **Add to compare**,
    **Download** and **Delete…**. ☆ stars a take and **★ starred only** filters the
-   list. The **Timeline** tab lists combined videos.
+   list. The **Timeline** tab lists the sequences exported from helmstudio's
+   timeline, and **Gallery** in the top bar browses every take this studio made.
 
-The terminal is saved per session in `terminal.log` and restored when the session
-opens; drag its top edge to resize it. With more than eight inputs of mixed kinds,
-chips above the library filter it by kind.
+The terminal is helmstudio's `helm-terminal`, streaming the log of the
+session's latest render from helmstudio, which keeps it; a render of the session
+takes its place when it starts. Drag its top edge to resize it.
+With more than eight inputs of mixed kinds, chips above the library filter it by
+kind.
 
 ## Comparing takes
 
@@ -176,45 +206,47 @@ While a job runs, clicking another take stops the viewer following the render;
 **Show live preview** in the progress panel switches back. When the take is
 done the viewer switches to the finished video, and the take's ⋮ menu gains
 **Previews (N)**: a slider through every preview in order, with
-**Back to video** to return. Previews live in `previews/<job>/`. They are
-deleted with their take, and also when the job fails, is stopped, or produced
-none.
+**Back to video** to return. Previews are scratch, written to the stage
+directory helmstudio gives the studio: helmstudio clears it when it stops the
+studio, so a take keeps its **Previews (N)** until then. They are deleted at
+once when the job fails, is stopped, or produced none.
 
 ## Timeline
 
-**Create Timeline** opens a full-screen editor for joining clips into one
-video:
+**Create Timeline** opens helmstudio's timeline: a sequence helmstudio keeps,
+edited in place — reorder, trim, dissolve, gain, undo — and exported by
+helmstudio. **New sequence** and **+** pick takes from the gallery. An export
+lands in the gallery and in the **Timeline** tab, and **Use video** pulls it
+back into inputs (e.g. to extend it).
 
-- **Browse** (left) — starts in the current session's `outputs/`; the
-  breadcrumb walks up to `sessions` and into any session's `outputs/`,
-  `timeline/` or `inputs/`. Click a clip to append it to the queue; a clip can
-  be added more than once (the badge counts uses).
-- **Queue** (middle) — numbered in play order with the running total length.
-  Drag to reorder, ✕ to remove, **Clear** to start over.
-- **Combined result** (right) — name the output and **Combine**. ffmpeg
-  letterboxes every clip onto the largest width/height in the queue, resamples
-  to 24 fps, adds silence for clips without audio, and writes
-  `timeline/<name>.mp4` plus a `.json` sidecar listing the source clips. The
-  result plays here and appears in the **Timeline** tab on the right.
+## Where things are kept
 
-Source clips are only read, never modified. A combined video can be pulled
-back into inputs with **Use video** (e.g. to extend it).
+Everything goes through helmstudio's runtime SDK (`State` in `server.py`), and every
+file the server writes goes where helmstudio says: no sessions directory, no
+settings files, nothing in the browser's storage.
 
-## Sessions
-
-```
-web/sessions/<name>/
-  setting.json   task, prompt and all form values — saved as you edit
-  terminal.log   the session's terminal output (rotated at ~2 MB)
-  inputs/        uploads, extracted frames/audio, takes reused as inputs
-  outputs/       rendered .mp4 takes, each with a .json sidecar (params, argv, probe, previews, starred)
-  previews/      live-preview WebPs, one folder per render
-  timeline/      combined videos, each with a .json sidecar (source clips, probe)
-```
+| What | Where helmstudio keeps it |
+| --- | --- |
+| Sessions | helmstudio sessions, listed, created, opened, duplicated and deleted through the SDK; the one opened last opens on start |
+| A session's settings | the session's state document, saved as you edit |
+| Inputs | pinned assets, listed in the session's state; a take made from an input names it as that take's input |
+| Takes | written to helmstudio's stage directory, adopted into its asset store, and recorded in its gallery with the session, the settings, the prompt, the probe and the inputs |
+| Renders | helmstudio jobs of their session, with their progress and their logs, which the terminal streams; helmstudio can cancel one |
+| Live previews | helmstudio's stage directory, scratch |
+| Sequences | helmstudio's timeline; exports are gallery items |
+| Folders from **Slice Clips** and **Preprocess Dataset** | the studio's data directory, where the next tool reads them by path: `outputs/<session id>/`; each file is adopted as an asset where it is (and so becomes read-only), and the folder is a record in the `folders` collection |
+| The page's preferences: side panel, terminal height, notifications | a kv document, `ui/preferences` |
+| The theme | helmstudio's own; the page follows it |
 
 Switch sessions from the top bar; new, duplicate and delete live in the **⋯**
-menu next to it. The last session is restored on start. `web/sessions/` is
-git-ignored.
+menu next to it. Following helmstudio:
+
+- **Duplicate** copies a session's settings and inputs; its takes stay with the
+  original session.
+- Deleting a session removes it with its settings and inputs; its takes stay in
+  helmstudio's gallery.
+- Deleting a take removes it from the gallery; helmstudio reclaims its file once
+  nothing uses it. An input is never reclaimed.
 
 ## Model and setup
 
@@ -238,7 +270,9 @@ tool must: other websites and other machines driving it.
   JSON content type (uploads: an `X-Filename` header), so a page you visit can't
   forge them.
 - Only whitelisted `ltx-2-mlx` subcommands run, without a shell, and task inputs
-  must be files inside the session's `inputs/`.
+  must be the session's inputs, which the server fetches from helmstudio.
+- The page never holds helmstudio's token: its calls go through the runtime
+  SDK's proxy at `/helm/`, which accepts only the studio's own origin.
 
 ## Adding a task
 
@@ -250,8 +284,9 @@ only runs whitelisted subcommands, without a shell.
 
 ## Requirements and limits
 
-- `ffmpeg`/`ffprobe` on `PATH` for media probing, thumbnails, frame/audio
-  extraction and combining.
+- helmstudio, or its `helm` CLI for `helm dev`, and `helm-runtime-sdk` in `.venv`.
+- `ffmpeg`/`ffprobe` on `PATH` for media probing and frame/audio extraction.
+  Thumbnails and timeline exports are helmstudio's.
 - Jobs can be stopped, but a stopped job leaves no take.
 - `info` on an official-weights directory lists no files: the CLI inspects the
   directory directly rather than the virtual pack.
