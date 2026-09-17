@@ -316,6 +316,15 @@ wheels = [
 ]
 
 [[package]]
+name = "helm-runtime-sdk"
+version = "1.0.0rc1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/27/d457ff59bbeee98342f19f9462106771387394d2233bf02aa8c4428817b9/helm_runtime_sdk-1.0.0rc1.tar.gz", hash = "sha256:d68fcc18d2dad39fae7c826c666f5938bd5527b2500a59a0ae71df3d354414e2", size = 12199, upload-time = "2026-09-17T11:02:37.967Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/ea/6ffff58590bca48c19a1d14ba821dd379985e0f8d750034b4d940482887f/helm_runtime_sdk-1.0.0rc1-py3-none-any.whl", hash = "sha256:b6d82e2fe98aba621698dbf3aa196b90d46a4769082c205cb75ea1df6ed38247", size = 13142, upload-time = "2026-09-17T11:02:36.766Z" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -430,6 +439,7 @@ name = "ltx-2-studio"
 version = "0.15.4"
 source = { virtual = "." }
 dependencies = [
+    { name = "helm-runtime-sdk" },
     { name = "ltx-core-mlx" },
     { name = "ltx-pipelines-mlx" },
 ]
@@ -454,6 +464,7 @@ trainer = [
 
 [package.metadata]
 requires-dist = [
+    { name = "helm-runtime-sdk", specifier = ">=1.0.0rc1,<2" },
     { name = "ltx-2-studio", extras = ["trainer", "dev"], marker = "extra == 'all'" },
     { name = "ltx-core-mlx", editable = "packages/ltx-core-mlx" },
     { name = "ltx-pipelines-mlx", editable = "packages/ltx-pipelines-mlx" },

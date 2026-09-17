@@ -21,31 +21,46 @@ ltx studio runs under helmstudio, which starts it from `helmstudio.yaml`, or on
 its own under `helm dev`, helmstudio's CLI, which keeps everything in `.helm/`
 beside the manifest. Started any other way it exits and says so. `web/run.sh`
 starts it under helm dev, from a terminal or from VS Code; extra arguments go to
-helm dev:
+helm dev. It needs two things helmstudio publishes:
+
+- **`helm`**, installed with helmstudio's installer, the first line below: it
+  downloads the newest release for this Mac, checks it against the release's
+  `SHA256SUMS`, and puts `helm` in `~/.local/bin`. Running it again updates
+  `helm`; [Installing helm](https://github.com/janishar/helmstudio/blob/main/docs/releasing.md#installing-helm)
+  covers a particular version and uninstalling. Kubernetes' CLI is also called
+  `helm`; if that one comes first on `PATH`, set `HELM` to helmstudio's.
+- **`helm-runtime-sdk`**, from PyPI: a dependency in `pyproject.toml`, pinned in
+  `uv.lock`, so `uv sync` installs it into `.venv`.
 
 ```bash
-HELMSTUDIO_REPO=~/helmstudio LTX_MODEL=~/models/LTX-2.5 bash web/run.sh    # port 8720, 127.0.0.1
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/janishar/helmstudio/main/installer/install.sh)"   # helm, once
+LTX_MODEL=~/models/LTX-2.5 bash web/run.sh    # port 8720, 127.0.0.1
 ```
 
-- `HELMSTUDIO_REPO`, a helmstudio checkout: each run builds `helm` and installs
-  `helm-runtime-sdk` into `.venv` from it, for as long as neither comes from a
-  release. Without it, `helm` must be on `PATH` and `helm-runtime-sdk`
-  installed in `.venv`.
+The page needs nothing installed. It loads helm-css, the runtime's browser
+client and helmstudio's components from whatever runs the studio, at
+`/helm/sdk/v1` through the SDK's proxy in `server.py`: `helm`'s own copy under
+helm dev, and helmstudio's inside helmstudio. Nothing comes from npm, a CDN or
+a clone of helmstudio. [How a studio fits together](https://helmstudio.in/docs/concepts/how-a-studio-fits-together/)
+explains the parts.
+
 - `LTX_MODEL`, a local directory of the official Lightricks LTX-2.5 files, in
   any layout: each file `helmstudio.yaml` declares is linked to the file of the
-  same name there, and helm dev uses the links. Without it, helm dev downloads
-  the files.
-- `HELMSTUDIO_SDKS`, where `helm`, the links and the copy of
-  `helm-runtime-sdk` it builds from go: `/tmp/helmstudio-sdks` by default. The
-  checkout itself is only read.
+  same name there, and helm dev uses the links. Without it, helm dev uses the
+  weights linked before; it never downloads them, so with nothing linked the
+  studio does not start.
+- `HELM`, the `helm` to run: `helm` on `PATH` by default.
 - `LTX_DEBUGPY`, a port: the server listens there for a Python debugger, with
   debugpy installed into `.venv` the first time. helm dev passes the studio a
   restricted environment, so the variable cannot reach the server itself;
   instead helm dev is given an environment whose `python` is `.venv`'s, run
   under debugpy.
 
-`bash web/run.sh stop` stops the studio the script last started. Starting it
-again stops the previous one first.
+What the script makes itself (the weight links, the debugger's environment and
+its pid file) stays in `.cache/ltx-studio`, beside the `.helm` helm dev keeps,
+and survives a restart. helm dev records where a weight is linked, so the links
+always go there. `bash web/run.sh stop` stops the studio the script last started.
+Starting it again stops the previous one first.
 
 Open http://127.0.0.1:8720. The model can also be changed from the **Model**
 button, which shows what the model can run (distilled / dev transformer, LTX-2.5
@@ -66,14 +81,14 @@ There is **no authentication** — keep it bound to `127.0.0.1` (see [Security](
 
 ### Run from VS Code
 
-**ltx studio** starts the studio with `web/run.sh`, with `HELMSTUDIO_REPO`
-and `LTX_MODEL` set for this machine in `.vscode/tasks.json`, and attaches the
-Python debugger to the server; stopping the session stops the studio. The task
-**run: ltx studio** starts it without the debugger. Static files are served
-uncached, so front-end edits only need a browser refresh; restart for server
-changes. The other tasks are **setup: uv sync** (with
-`--inexact`, so it keeps `helm-runtime-sdk`, which `uv.lock` does not have yet),
-**test: fast suite** (default test task) and **lint: ruff** (default build task).
+**ltx studio** starts the studio with `web/run.sh`, with `LTX_MODEL` set for
+this machine in `.vscode/tasks.json`, and attaches the Python debugger to the
+server; stopping the session stops the studio. The task **run: ltx studio**
+starts it without the debugger. Static files are served uncached, so front-end
+edits only need a browser refresh; restart for server changes. The other tasks
+are **setup: uv sync** (with `--inexact`, so it keeps the debugpy `web/run.sh`
+installs for the debugger), **test: fast suite** (default test task) and
+**lint: ruff** (default build task).
 
 | Configuration (`Cmd+Shift+D`, `F5`) | What it does |
 | --- | --- |
@@ -284,7 +299,9 @@ only runs whitelisted subcommands, without a shell.
 
 ## Requirements and limits
 
-- helmstudio, or its `helm` CLI for `helm dev`, and `helm-runtime-sdk` in `.venv`.
+- helmstudio, or its `helm` CLI for `helm dev`, installed with helmstudio's
+  installer, and `helm-runtime-sdk` in `.venv`, which `uv sync` installs from
+  PyPI.
 - `ffmpeg`/`ffprobe` on `PATH` for media probing and frame/audio extraction.
   Thumbnails and timeline exports are helmstudio's.
 - Jobs can be stopped, but a stopped job leaves no take.

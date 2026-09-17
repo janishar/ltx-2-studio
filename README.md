@@ -83,7 +83,8 @@ instead of hand-built command lines.
   media probing and frame/audio extraction. `brew install ffmpeg`.
 - **[helmstudio](https://github.com/janishar/helmstudio)** for the web studio,
   which keeps everything through helmstudio's runtime SDK: helmstudio itself,
-  or its `helm` CLI to run the studio on its own.
+  or its `helm` CLI to run the studio on its own, installed with helmstudio's
+  installer (see [Web studio](#web-studio)).
 - **Hugging Face CLI** (`hf`, installed with the dependencies) to download
   weights.
 
@@ -96,7 +97,8 @@ uv sync --all-extras
 ```
 
 This installs three workspace packages (`ltx-core-mlx`, `ltx-pipelines-mlx`,
-`ltx-trainer-mlx`) and the `ltx-2-mlx` command into `.venv`.
+`ltx-trainer-mlx`) and the `ltx-2-mlx` command into `.venv`, with helmstudio's
+runtime SDK (`helm-runtime-sdk`, from PyPI) for the web studio.
 
 ## Downloading the weights
 
@@ -151,11 +153,15 @@ default model, so pass `--model` or set `LTX_MODEL`.
 ### Web studio
 
 ```bash
-HELMSTUDIO_REPO=~/helmstudio LTX_MODEL=./models/ltx-2.5 bash web/run.sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/janishar/helmstudio/main/installer/install.sh)"   # helm, once
+LTX_MODEL=./models/ltx-2.5 bash web/run.sh
 ```
 
 Open http://127.0.0.1:8720. `web/run.sh` runs the studio under helmstudio's
-`helm dev`; helmstudio can also start it from `helmstudio.yaml`.
+`helm dev`. The first line installs `helm` into `~/.local/bin` from
+helmstudio's releases, checked against the release's checksums; running it
+again updates `helm`. helmstudio can also start the studio from
+`helmstudio.yaml`.
 **There is no authentication** — see [Limits](#limits) before binding to
 anything other than `127.0.0.1`. [web/README.md](web/README.md) is the full
 studio guide: running it, VS Code, and where everything is kept.

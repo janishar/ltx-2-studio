@@ -10,7 +10,6 @@
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
-          "HELMSTUDIO_REPO": "/Users/janisharali/GenAI/helmstudio",
           "LTX_MODEL": "/Users/janisharali/GenAI/ltx/models/ltx-2.5"
         }
       },
@@ -26,7 +25,6 @@
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
-          "HELMSTUDIO_REPO": "/Users/janisharali/GenAI/helmstudio",
           "LTX_MODEL": "/Users/janisharali/GenAI/ltx/models/ltx-2.5",
           "LTX_DEBUGPY": "5678"
         }
@@ -37,7 +35,7 @@
         "pattern": { "regexp": "^ltx studio problem: (.*):(\\d+): (.*)$", "file": 1, "line": 2, "message": 3 },
         "background": {
           "activeBegins": true,
-          "beginsPattern": "^(helm|helm-runtime-sdk|weights|debugpy|helm dev):",
+          "beginsPattern": "^(weights|debugpy|helm dev):",
           "endsPattern": "ltx studio on http://"
         }
       }
@@ -53,7 +51,7 @@
     },
     {
       "label": "setup: uv sync",
-      "detail": "--inexact keeps helm-runtime-sdk, which is not in uv.lock",
+      "detail": "--inexact keeps debugpy, which web/run.sh installs into .venv for the debugger",
       "type": "shell",
       "command": "uv",
       "args": ["sync", "--all-extras", "--inexact"],

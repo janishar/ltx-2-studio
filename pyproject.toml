@@ -21,6 +21,8 @@ classifiers = [
 dependencies = [
     "ltx-core-mlx",
     "ltx-pipelines-mlx",
+    # ltx studio (web/) keeps everything through helmstudio; major 1, as helmstudio.yaml pins it.
+    "helm-runtime-sdk>=1.0.0rc1,<2",
 ]
 
 [project.optional-dependencies]

@@ -2,16 +2,20 @@
 # Launch ltx studio on its own, from anywhere: under `helm dev`, which keeps
 # everything ltx studio keeps in ./.helm through helmstudio's runtime SDK.
 #
-#   [HELMSTUDIO_REPO=<checkout>] [LTX_MODEL=<LTX-2.5 files>] [HELMSTUDIO_SDKS=<dir>] [LTX_DEBUGPY=<port>] bash web/run.sh [helm dev flags]
+#   [LTX_MODEL=<LTX-2.5 files>] [HELM=<helm>] [LTX_DEBUGPY=<port>] bash web/run.sh [helm dev flags]
 #   bash web/run.sh stop
 #
-# What each variable does: web/README.md, "Running".
+# helm comes from helmstudio's installer, and helm-runtime-sdk from PyPI, locked
+# in uv.lock and installed by `uv sync`. What the script makes itself (the weight
+# links, the debugger's environment, its pid file) stays in .cache/ltx-studio,
+# beside the .helm helm dev keeps. What each variable does: web/README.md, "Running".
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-SDKS="${HELMSTUDIO_SDKS:-/tmp/helmstudio-sdks}"
-HELM="helm"
-PIDFILE="$SDKS/ltx-studio.pid"
+# helm dev records where a weight is linked, so the links stay in one place.
+RUN="$PWD/.cache/ltx-studio"
+HELM="${HELM:-helm}"
+PIDFILE="$RUN/ltx-studio.pid"
 
 # Ends the helm dev this script last started, which stops the studio before it
 # exits. A run starts by doing the same, so starting again is a restart.
@@ -30,23 +34,9 @@ if [ "${1:-}" = "stop" ]; then
   exit 0
 fi
 
-if [ -n "${HELMSTUDIO_REPO:-}" ]; then
-  HELM="$SDKS/bin/helm"
-  echo "helm: building from $HELMSTUDIO_REPO"
-  (cd "$HELMSTUDIO_REPO" && go build -o "$HELM" ./cmd/helm)
-  # Not in uv.lock until it is on PyPI: `uv sync` without --inexact removes it again.
-  # Built from a copy: setuptools leaves build/ and an .egg-info beside the source
-  # it builds, and the checkout is not ltx studio's to write in.
-  echo "helm-runtime-sdk: installing into .venv from $HELMSTUDIO_REPO"
-  sdk="$SDKS/src/helm-runtime-sdk"
-  rm -rf "$sdk" && mkdir -p "$sdk"
-  cp -R "$HELMSTUDIO_REPO/packages/helm-runtime-sdk/python/"{pyproject.toml,README.md,LICENSE,helm_runtime_sdk} "$sdk"
-  uv pip install --quiet --reinstall-package helm-runtime-sdk --python .venv/bin/python "$sdk"
-fi
-
 if [ -n "${LTX_MODEL:-}" ]; then
-  echo "weights: linking $LTX_MODEL as $SDKS/weights/ltx-2.5"
-  .venv/bin/python - "$LTX_MODEL" "$SDKS/weights/ltx-2.5" <<'PY'
+  echo "weights: linking $LTX_MODEL as $RUN/weights/ltx-2.5"
+  .venv/bin/python - "$LTX_MODEL" "$RUN/weights/ltx-2.5" <<'PY'
 import sys
 from pathlib import Path
 
@@ -63,15 +53,16 @@ for declared in next(weight for weight in manifest["weights"] if weight["name"] 
     link.unlink(missing_ok=True)
     link.symlink_to(found[0])
 PY
-  set -- -link "ltx=$SDKS/weights/ltx-2.5" "$@"
+  set -- -link "ltx=$RUN/weights/ltx-2.5" "$@"
 fi
 
 if ! command -v "$HELM" >/dev/null; then
-  echo "helm is not installed: install it from helmstudio's releases, or set HELMSTUDIO_REPO to build it" >&2
+  echo "helm is not installed. Install it with helmstudio's installer, or set HELM to its path:" >&2
+  echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/janishar/helmstudio/main/installer/install.sh)"' >&2
   exit 1
 fi
 if ! .venv/bin/python -c "import helm_runtime_sdk" 2>/dev/null; then
-  echo "helm-runtime-sdk is not installed in .venv: install it, or set HELMSTUDIO_REPO to install it from a checkout" >&2
+  echo "helm-runtime-sdk is not installed in .venv: run uv sync" >&2
   exit 1
 fi
 
@@ -85,7 +76,7 @@ if [ -n "${LTX_DEBUGPY:-}" ]; then
     echo "debugpy: installing into .venv"
     uv pip install --quiet --python .venv/bin/python debugpy
   fi
-  VENV="$SDKS/ltx-studio-debugpy"
+  VENV="$RUN/ltx-studio-debugpy"
   rm -rf "$VENV" && mkdir -p "$VENV/bin"
   cp .venv/pyvenv.cfg "$VENV/"
   for entry in "$PWD"/.venv/bin/*; do ln -s "$entry" "$VENV/bin/"; done
@@ -96,6 +87,6 @@ if [ -n "${LTX_DEBUGPY:-}" ]; then
 fi
 
 stop
-mkdir -p "$SDKS"
+mkdir -p "$RUN"
 echo $$ >"$PIDFILE"
 exec "$HELM" dev -f helmstudio.yaml -venv "$VENV" "$@"

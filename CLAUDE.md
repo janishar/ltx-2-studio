@@ -1209,7 +1209,7 @@ scripts in `tests/parity_keyframe/` also use `LTX_REFERENCE_DIR`,
   `commitlint` in CI.
 - Package imports: `ltx_core_mlx.*` for core, `ltx_pipelines_mlx.*` for pipelines.
 - One branch = one concern (see Release Process above).
-- ltx studio's one dependency is helmstudio's runtime SDK (`helm-runtime-sdk`, itself stdlib-only), and it keeps everything through it: no store of its own, no files outside the directories helmstudio gives it, no browser storage. Otherwise a stdlib Python server, vanilla JS, no build step.
+- ltx studio's one dependency is helmstudio's runtime SDK (`helm-runtime-sdk` from PyPI, pinned in `uv.lock`, itself stdlib-only), and it keeps everything through it: no store of its own, no files outside the directories helmstudio gives it, no browser storage. Otherwise a stdlib Python server, vanilla JS, no build step. The page loads helm-css, the runtime's browser client and the components from whatever runs the studio (`helm dev`, with `helm` from helmstudio's installer, or helmstudio), at `/helm/sdk/v1` through the SDK's proxy: nothing from npm, a CDN or a helmstudio clone, which `tests/test_web_sdk_sources.py` holds.
 
 ---
 
