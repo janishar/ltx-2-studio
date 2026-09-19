@@ -37,6 +37,7 @@ function hidePreview() {
 
 function showPreviewImage(url, badge) {
   closeCompare();
+  stopSequence();
   const player = $("player");
   player.pause();
   player.classList.remove("on");
@@ -86,10 +87,11 @@ function renderScrub() {
   setCaption(`${S.scrub.take.name} · previews · ${name}`);
 }
 
-/** Play a take or an exported sequence in the viewer, or clear it when item is null. */
+/** Play a take, an export or a sequence's clip in the viewer, or clear it when item is null. */
 function showInViewer(item, caption = "", autoplay = false) {
   closeCompare();
   hidePreview();
+  stopSequence();
   const player = $("player");
   if (item) {
     player.src = item.url;
@@ -113,6 +115,7 @@ function showInViewer(item, caption = "", autoplay = false) {
 function markSelection() {
   document.querySelectorAll("#takeList > li[data-name]").forEach((li) => li.classList.toggle("on", li.dataset.name === S.selectedTake));
   document.querySelectorAll("#timelineList > li[data-name]").forEach((li) => li.classList.toggle("on", li.dataset.name === S.selectedTimeline));
+  document.querySelectorAll("#timelineList > li[data-sequence]").forEach((li) => li.classList.toggle("on", li.dataset.sequence === S.selectedSequence));
 }
 
 // ── takes list ───────────────────────────────────────────────────────────
@@ -121,8 +124,11 @@ async function loadTakes(selectNewest = false) {
   S.takes = await api(`/api/takes?session=${encodeURIComponent(S.session)}`);
   renderTakes();
   renderHistoryButton();
-  // Never auto-select over a seed grid that is open or about to open.
-  if (selectNewest && S.takes.length && $("compare").hidden && !S.batchOpening) selectTake(S.takes[0].name, false);
+  // Never auto-select over a seed grid that is open or about to open, or over
+  // a sequence being watched, which is as much a choice as picking a take.
+  if (selectNewest && S.takes.length && $("compare").hidden && !S.batchOpening && !S.selectedSequence) {
+    selectTake(S.takes[0].name, false);
+  }
 }
 
 function takeMeta(t) {
@@ -307,6 +313,7 @@ function openCompareGrid(names = S.compare) {
   const takes = names.map((name) => S.takes.find((t) => t.name === name)).filter(Boolean);
   if (takes.length < 2) return;
   closeCompare();
+  stopSequence();
   const videos = takes.map((t) => el("video", { src: t.url, muted: true, playsInline: true, loop: true, preload: "auto" }));
   const cells = takes.map((t, i) => el("figure", { class: "compare-cell" }, videos[i],
     el("figcaption", {},
@@ -335,6 +342,7 @@ function openWipe(names = S.compare) {
   const takes = names.map((name) => S.takes.find((t) => t.name === name)).filter(Boolean);
   if (takes.length !== 2) return;
   closeCompare();
+  stopSequence();
   const [a, b] = takes;
   const videoA = el("video", { src: a.url, playsInline: true, loop: true, preload: "auto" });
   const videoB = el("video", { src: b.url, playsInline: true, muted: true, loop: true, preload: "auto" });
@@ -385,18 +393,140 @@ function noteBatchJob(job) {
   }).finally(() => { S.batchOpening = false; });
 }
 
-// ── timeline list (sequences exported from helmstudio's timeline) ────────
+// ── timeline list: the sequences helmstudio keeps, and the exports ───────
+//
+// Two different things under one word. An export is a file in the gallery,
+// rendered from a sequence; a sequence is the edit itself, which helmstudio
+// keeps and the Create Timeline editor changes. Each row says which it is and
+// is offered only what can work on it.
+
+// The sequence the viewer is playing: its clips, which one is on screen, and
+// the listeners driving it. Empty when the viewer is showing anything else.
+const SEQ = { item: null, clips: [], at: 0, on: null };
 
 async function loadTimeline() {
   S.timeline = await api(`/api/timeline?session=${encodeURIComponent(S.session)}`);
   renderTimelineList();
 }
 
+/** A sequence helmstudio keeps, rather than a file exported from one. */
+function isSequence(t) {
+  return Boolean(t.meta && t.meta.source === "helmstudio");
+}
+
+/** What marks a sequence as the one the viewer is playing. */
+function sequenceId(t) {
+  return (t.meta && t.meta.timeline_id) || t.name;
+}
+
+/** The clips of a sequence the viewer can play: each needs a source to play. */
+function sequenceClips(t) {
+  return ((t.meta && t.meta.clips) || []).filter((clip) => clip.url);
+}
+
+/**
+ * openSequence asks for the editor that holds this sequence.
+ *
+ * This panel lists sequences and knows nothing about the dialog that edits
+ * them: app.js mounts that and listens for this. With nothing behind the proxy
+ * nothing listens, and nothing lists a sequence to click either.
+ */
+function openSequence(t) {
+  const id = t.meta && t.meta.timeline_id;
+  if (!id) return;
+  document.dispatchEvent(new CustomEvent("ltx:open-sequence", { detail: { id } }));
+}
+
+function sequenceCaption(t, index, total) {
+  return `${t.name}${total > 1 ? ` · clip ${index + 1}/${total}` : ""} · in helmstudio`;
+}
+
+// A sequence is an edit helmstudio keeps, not a file here, so there is nothing
+// to hand the viewer but the clips it names. Play runs them in order in the
+// same player a take uses — each straight from its asset through this studio's
+// /helm/ proxy, cut at the in and out points the sequence holds — so the edit
+// can be watched as it stands, without waiting on an export. Sound is each
+// clip's own; a sequence whose audio was cut on its own tracks has to be
+// exported to be heard as it was laid out.
+function playSequence(t) {
+  const clips = sequenceClips(t);
+  if (!clips.length) return;
+  const player = $("player");
+  // This clears whatever the viewer held, including another sequence, so SEQ
+  // is only filled in afterwards.
+  showInViewer({ url: clips[0].url }, sequenceCaption(t, 0, clips.length), true);
+  SEQ.item = t;
+  SEQ.clips = clips;
+  SEQ.at = 0;
+  SEQ.on = {
+    loadedmetadata: () => seekIntoClip(player),
+    timeupdate: () => {
+      const clip = SEQ.clips[SEQ.at];
+      // A clip ends at its out point, not at the end of the asset it was cut
+      // from; ended covers the clip that runs to the end.
+      if (clip.out !== undefined && clip.out !== null && player.currentTime >= clip.out) nextClip();
+    },
+    ended: () => nextClip(),
+  };
+  for (const [event, handler] of Object.entries(SEQ.on)) player.addEventListener(event, handler);
+  // Watching a sequence is a choice, as picking a take is: a render running
+  // behind it keeps its previews out of the viewer.
+  if (S.runningId) S.followPreview = false;
+  S.selectedTake = null;
+  S.selectedTimeline = null;
+  S.selectedSequence = sequenceId(t);
+  renderTakes();
+  renderTimelineList();
+}
+
+// Start the clip on screen where the sequence cuts into it. It runs on every
+// loadedmetadata, since a source has no seekable range before then.
+function seekIntoClip(player) {
+  const clip = SEQ.clips[SEQ.at];
+  const into = clip && clip.in;
+  if (into && player.currentTime < into) player.currentTime = into;
+}
+
+/** Cut to the next clip, or stop on the last one as a take does when it ends. */
+function nextClip() {
+  const player = $("player");
+  if (SEQ.at + 1 >= SEQ.clips.length) {
+    player.pause();
+    return;
+  }
+  SEQ.at += 1;
+  player.src = SEQ.clips[SEQ.at].url;
+  player.load();
+  setCaption(sequenceCaption(SEQ.item, SEQ.at, SEQ.clips.length));
+  player.play().catch(() => {});
+}
+
+// Stop playing a sequence. showInViewer and showPreviewImage call this before
+// they show anything else, which is every way the viewer changes — so a take,
+// a preview, a compare view or an emptied viewer all end the sequence rather
+// than fighting it for the player.
+function stopSequence() {
+  if (!SEQ.clips.length) return;
+  const player = $("player");
+  for (const [event, handler] of Object.entries(SEQ.on || {})) player.removeEventListener(event, handler);
+  SEQ.item = null;
+  SEQ.clips = [];
+  SEQ.at = 0;
+  SEQ.on = null;
+  S.selectedSequence = null;
+}
+
 function timelineMeta(t) {
   const p = t.probe || {};
+  const meta = t.meta || {};
   const bits = [];
-  if (p.width) bits.push(`${p.width}×${p.height}`);
-  if (p.duration) bits.push(`${p.duration.toFixed(1)}s`);
+  const clips = (meta.clips || []).length;
+  if (clips) bits.push(`${clips} clip${clips === 1 ? "" : "s"}`);
+  const width = p.width || meta.width;
+  if (width) bits.push(`${width}×${p.height || meta.height}`);
+  const seconds = p.duration || meta.duration_s;
+  if (seconds) bits.push(`${seconds.toFixed(1)}s`);
+  if (isSequence(t)) bits.push("in helmstudio");
   return bits.join(" · ") || "sequence";
 }
 
@@ -406,30 +536,50 @@ function renderTimelineList() {
     $("timelineList").replaceChildren(el("li", { class: "list-empty", text: "No sequences yet. Create Timeline above makes one." }));
     return;
   }
-  $("timelineList").replaceChildren(...S.timeline.map((t) => el("li", {
-    class: t.name === S.selectedTimeline ? "on" : "", dataset: { name: t.name }, onclick: () => selectTimeline(t.name),
-  },
-    el("div", { class: "row" },
-      el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
-      el("div", { class: "info" },
-        el("div", { class: "nm", text: t.name, title: t.name }),
-        el("div", { class: "meta", text: timelineMeta(t) }))),
-    el("div", { class: "ops" },
-      opButton("Use video", "Use this sequence as an input (retake, extend, control)", () => useVideo(t.name, "timeline")),
-      popmenu("⋮", "More actions", [
-        downloadLink(t.url, t.name),
-        menuItem("Delete…", "Delete this exported sequence", async () => {
-          if (!confirm(`Delete this exported sequence?\n${t.name}\n\nThe sequence and its clips stay on helmstudio's timeline.`)) return;
-          await api("/api/timeline/delete", { session: S.session, name: t.name });
-          if (S.selectedTimeline === t.name) showInViewer(null);
-          await loadTimeline();
-        }, "danger-item"),
-      ])))));
+  $("timelineList").replaceChildren(...S.timeline.map((t) => {
+    // A sequence has no file here: it is an edit helmstudio keeps, and
+    // exporting one is its own job. So clicking one opens the editor that
+    // holds it — an edit is a thing to open, the way a document is — rather
+    // than playing it where a rendered take plays, and it is offered none of
+    // the actions below, each of which uses or deletes a file. Watching it as
+    // it stands is one button away.
+    const sequence = isSequence(t);
+    const playable = sequence && sequenceClips(t).length > 0;
+    const on = sequence ? S.selectedSequence === sequenceId(t) : t.name === S.selectedTimeline;
+    return el("li", {
+      class: on ? "on" : "",
+      dataset: sequence ? { sequence: sequenceId(t) } : { name: t.name },
+      onclick: sequence ? () => openSequence(t) : () => selectTimeline(t.name),
+    },
+      el("div", { class: "row" },
+        el("div", { class: "thumb" }, t.thumb ? el("img", { src: t.thumb, alt: "", loading: "lazy" }) : null),
+        el("div", { class: "info" },
+          el("div", { class: "nm", text: t.name, title: t.name }),
+          el("div", { class: "meta", text: timelineMeta(t) }))),
+      sequence
+        ? (playable
+          ? el("div", { class: "ops" },
+            opButton("Play", "Watch the sequence as it stands, clip by clip", () => playSequence(t)))
+          : null)
+        : el("div", { class: "ops" },
+          opButton("Use video", "Use this sequence as an input (retake, extend, control)", () => useVideo(t.name, "timeline")),
+          popmenu("⋮", "More actions", [
+            downloadLink(t.url, t.name),
+            menuItem("Delete…", "Delete this exported sequence", async () => {
+              if (!confirm(`Delete this exported sequence?\n${t.name}\n\nThe sequence and its clips stay on helmstudio's timeline.`)) return;
+              await api("/api/timeline/delete", { session: S.session, name: t.name });
+              if (S.selectedTimeline === t.name) showInViewer(null);
+              await loadTimeline();
+            }, "danger-item"),
+          ])));
+  }));
 }
 
 function selectTimeline(name) {
   S.followPreview = false;
-  const item = S.timeline.find((t) => t.name === name);
+  // By name and by kind: a sequence may carry the same name as an export, and
+  // it is the file this plays.
+  const item = S.timeline.find((t) => !isSequence(t) && t.name === name);
   S.selectedTimeline = item ? name : null;
   S.selectedTake = null;
   if (!item) return showInViewer(null);

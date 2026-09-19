@@ -428,6 +428,60 @@ def test_a_take_is_a_gallery_item_with_its_session_and_inputs(platform, state, r
         state.set_star("session-1", output.name, False)
 
 
+def test_the_timeline_panel_lists_exports_and_the_sequences_helmstudio_keeps(platform, state, runner, monkeypatch):
+    """The panel lists two different things under one word, and says which each is.
+
+    An export is a file in the gallery, rendered from a sequence. A sequence is
+    the edit itself: no file here, so it arrives with the clips the viewer
+    plays in place of one, each through this studio's own proxy.
+    """
+    monkeypatch.setattr(server, "ffprobe", lambda path: {"width": 704, "height": 448, "duration": 2.0})
+    state.activate("session-1")
+    job = runner.jobs[runner.submit({"session": "session-1", "subcommand": "generate",
+                                     "args": ["--prompt", "a cat"], "params": {}})["id"]]  # fmt: skip
+    output = Path(job["output"])
+    output.write_bytes(b"mp4 bytes")
+    job["elapsed"] = 1.0
+    state.take_finished(job, output, [])
+    (item,) = platform.items.values()
+    item["timeline_id"] = "01EXPORTED"  # helmstudio marks the item an export came from its sequence
+    sequence = platform.add_sequence("ltx sequence", [
+        {"asset_id": "A1"}, {"asset_id": "A2", "in": 1.5, "out": 4.0},
+    ], duration_s=12.5)  # fmt: skip
+
+    export, seq = state.list_timeline("session-1")
+    assert export["url"] == f"/helm/api/v1/assets/{item['asset_id']}" and "meta" not in export
+    assert seq["name"] == "ltx sequence" and seq["meta"]["source"] == "helmstudio"
+    assert seq["meta"]["timeline_id"] == sequence["id"]
+    assert "url" not in seq  # a sequence is not a file here: exporting one is its own job
+    # Each clip plays through this studio's proxy, which holds the token the page does not.
+    assert seq["meta"]["clips"] == [
+        {"asset_id": "A1", "url": "/helm/api/v1/assets/A1"},
+        {"asset_id": "A2", "url": "/helm/api/v1/assets/A2", "in": 1.5, "out": 4.0},
+    ]
+    assert seq["thumb"] == "/helm/api/v1/assets/A1/thumb?w=320"  # the edit has no picture of its own
+    assert (seq["meta"]["duration_s"], seq["meta"]["width"]) == (12.5, 704)
+
+
+def test_a_sequence_with_no_clips_and_a_refusal_are_both_no_sequences(platform, state):
+    """A studio with nothing on its timeline lists its exports and nothing else.
+
+    And a refusal is not the panel's to fail on: the exports above are still
+    worth showing, so it is read as none.
+    """
+    state.activate("session-1")
+    assert state.list_timeline("session-1") == []
+    platform.add_sequence("empty", [])
+    (seq,) = state.list_timeline("session-1")
+    assert seq["meta"]["clips"] == [] and seq["thumb"] is None  # nothing to play, and no picture
+
+    def refuse(**_: Any) -> dict[str, Any]:
+        raise server.HelmError(403, "forbidden")
+
+    state.client.timeline.list = refuse
+    assert state.list_timeline("session-1") == []
+
+
 def test_a_render_is_a_job_and_its_log_is_the_terminal(platform, state, runner, monkeypatch):
     monkeypatch.setattr(server.HelmJob, "INTERVAL_S", 0)
     monkeypatch.setattr(server.HelmJob, "LOG_INTERVAL_S", 3600)  # the test sends the log itself
