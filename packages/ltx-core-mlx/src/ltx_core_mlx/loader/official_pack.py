@@ -33,6 +33,7 @@ import functools
 import gc
 import hashlib
 import json
+import math
 import os
 import shutil
 import struct
@@ -102,6 +103,12 @@ class OfficialSources:
 def _read_header_cached(path: str, size: int, mtime_ns: int) -> tuple[dict, dict]:
     with open(path, "rb") as f:
         n = struct.unpack("<Q", f.read(8))[0]
+        # A corrupt or non-safetensors file can claim a header bigger than itself, and
+        # reading it blindly asks for that much memory: eight junk bytes decode to a
+        # length near 2**63, which raises MemoryError rather than the ValueError callers
+        # like virtual_source_info expect.
+        if n > max(size - 8, 0):
+            raise ValueError(f"{path}: safetensors header length {n} exceeds the file ({size} bytes)")
         header = json.loads(f.read(n))
     metadata = header.pop("__metadata__", None) or {}
     return header, metadata
@@ -704,6 +711,43 @@ def virtual_source_info(path: str | Path) -> dict | None:
         return None
     raw = metadata.get(VIRTUAL_METADATA_KEY)
     return json.loads(raw) if raw else None
+
+
+#: Bytes per safetensors dtype, for sizing a component without reading its tensors.
+_DTYPE_BYTES: dict[str, int] = {
+    "BOOL": 1, "U8": 1, "I8": 1, "F8_E4M3": 1, "F8_E5M2": 1,
+    "U16": 2, "I16": 2, "F16": 2, "BF16": 2,
+    "U32": 4, "I32": 4, "F32": 4,
+    "U64": 8, "I64": 8, "F64": 8,
+}  # fmt: skip
+
+
+def virtual_component_nbytes(path: str | Path) -> int | None:
+    """Bytes a placeholder's component occupies once converted, or ``None`` if not virtual.
+
+    A placeholder lists its tensors with ``shape: [0]``, so its own file size says
+    nothing about the weights it stands for -- a 31 KB header can front a gigabyte.
+    Callers that charge a component against a memory budget need the real figure;
+    this reads the official source's header and sums the converted entries, without
+    loading a tensor.
+    """
+    info = virtual_source_info(path)
+    if info is None:
+        return None
+    source = Path(info["source"])
+    if not source.exists():
+        return None
+    total = 0
+    for entry in converted_entries(source, info["component"], info["bits"]):
+        count = math.prod(entry.shape)
+        if entry.quantize:
+            # int4/int8 payload plus its fp scales and biases, one pair per group.
+            bits = info["bits"] or 8
+            groups = count // GROUP_SIZE
+            total += count * bits // 8 + 2 * groups * _DTYPE_BYTES.get(entry.dtype, 2)
+        else:
+            total += count * _DTYPE_BYTES.get(entry.dtype, 2)
+    return total
 
 
 def is_virtual_file(path: str | Path) -> bool:

@@ -8,6 +8,7 @@ The slow contract test runs against a real download when
 from __future__ import annotations
 
 import json
+import math
 import os
 import struct
 from pathlib import Path
@@ -269,6 +270,32 @@ def test_diffusion_decoder_config_reaches_the_placeholder(pack: Path):
     # missing fields rather than silently falling back -- proof it reads this file.
     with pytest.raises(KeyError):
         DiffusionDecoderConfig.from_safetensors_metadata(pack / "vae_decoder_av.safetensors")
+
+
+def test_a_junk_safetensors_file_is_simply_not_virtual(tmp_path: Path):
+    """``virtual_source_info`` is a predicate: garbage answers False, it does not raise.
+
+    Eight junk bytes decode to a header length near 2**63, so reading it blindly
+    raised MemoryError -- which callers do not catch -- instead of ValueError.
+    """
+    junk = tmp_path / "vae_decoder_av.safetensors"
+    junk.write_bytes(b"x" * 10)
+    assert op.virtual_source_info(junk) is None
+    assert op.is_virtual_file(junk) is False
+    assert op.virtual_component_nbytes(junk) is None
+
+
+def test_virtual_component_nbytes_reports_the_real_weights(pack: Path, official_dir: Path):
+    """A placeholder's own size says nothing about the weights it stands for."""
+    placeholder = pack / "vae_decoder_av.safetensors"
+    source_tensors, _ = op.read_safetensors_header(official_dir / "vae" / op.OFFICIAL_FILENAMES["video_vae_av"])
+    expected = sum(
+        math.prod(info["shape"]) * 4  # the fixture writes float32
+        for key, info in source_tensors.items()
+        if op.sanitize_vae_decoder_key(key) is not None and not key.startswith("encoder.")
+    )
+    assert op.virtual_component_nbytes(placeholder) == expected
+    assert placeholder.stat().st_size < expected  # the header is far smaller than the weights
 
 
 def test_the_av_vae_is_optional(official_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

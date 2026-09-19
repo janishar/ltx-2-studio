@@ -1117,7 +1117,11 @@ that fits is chosen. `--diffvae-tile FRAMES HEIGHT WIDTH` overrides it (0 = axis
 (default 1,204,224) still applies. Overlaps make tiled decodes cost several times the untiled
 token count (the `[diffvae tiling]` stderr line prints the redundancy factor); a bigger budget
 means fewer, larger tiles. Tiled and untiled renders of the same seed differ in fine texture
-(different noise), as upstream. Decoder noise seed = `seed + 30000`; not
+(different noise), as upstream. **On official weights** the decoder's size is charged against the
+budget via `official_pack.virtual_component_nbytes`, not `path.stat().st_size`: a virtual pack's
+placeholder is a ~32 KB header standing for 0.78 GB of weights, so the file size would hand the
+tile sizer that much headroom it does not have (`cli._diffvae_weight_bytes`,
+`blocks._diffvae_weight_bytes`). Decoder noise seed = `seed + 30000`; not
 bit-comparable with torch's generator. Parity: per-stage torch goldens
 (`tests/parity_diffvae_reference.py`, disposable env) at 1e-4 (det stages) / 1e-3 (diffusion).
 Conv stays the default. Key files: `model/video_vae/diffusion_decoder/`, `utils/blocks.py::_DiffusionVideoDecoder`.

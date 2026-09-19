@@ -303,6 +303,18 @@ class ImageConditioner:
         return result
 
 
+def _diffvae_weight_bytes(path: Path) -> int:
+    """Bytes the diffusion decoder's weights occupy, charged against the decode budget.
+
+    A virtual pack's placeholder is a header-only file, so its size says nothing about
+    the official weights behind it -- 31 KB standing for 0.8 GB. Charging the file size
+    would leave the tile sizer that much headroom it does not have.
+    """
+    from ltx_core_mlx.loader.official_pack import virtual_component_nbytes
+
+    return virtual_component_nbytes(path) or path.stat().st_size
+
+
 class _DiffusionVideoDecoder:
     """Streams a (tiled) diffusion-decoder decode to ffmpeg through the shared plumbing.
 
@@ -469,7 +481,10 @@ class VideoDecoder:
             decoder = load_diffusion_decoder(path)
             decoder.set_dtype(mx.bfloat16)
             self._decoder = _DiffusionVideoDecoder(
-                decoder, weight_bytes=path.stat().st_size, tile_override=self.diffvae_tile, verbose=self.verbose
+                decoder,
+                weight_bytes=_diffvae_weight_bytes(path),
+                tile_override=self.diffvae_tile,
+                verbose=self.verbose,
             )
             aggressive_cleanup()
             return self._decoder

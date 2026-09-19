@@ -40,7 +40,7 @@ const GENERATE_ADVANCED = [
     hint: "LTX-2.5 · extra keyframes at evenly spaced interior frames sharpen fast motion; each adds one latent frame of stage-1 tokens",
     advanced: false },
   { key: "videoDecoder", label: "Video decoder", type: "select", default: "conv", advanced: true,
-    hint: "LTX-2.5 · diffusion is sharper on fine detail but several times slower, and capped at 512×768×49",
+    hint: "LTX-2.5 · diffusion is sharper on fine detail but several times slower; it tiles automatically to fit the decode budget",
     options: [
       ["conv", "Conv — default"],
       ["diffusion", "Diffusion — sharper, slower"],

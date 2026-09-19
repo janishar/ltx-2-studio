@@ -121,9 +121,12 @@ installs for the debugger), **test: fast suite** (default test task) and
    N + 2 frames.
    **Video decoder** (Advanced) picks how latents become pixels: **Conv** (the
    default) or **Diffusion**, the LTX-2.5 `NADiffusionDecoder` — sharper on fine
-   detail, several times slower, and capped at 512×768×49. It is refused with an
-   explanation on models without the decoder weights, and on live preview, which
-   decodes one window per step and needs the conv decoder.
+   detail and several times slower. It tiles automatically to fit the decode
+   budget (`LTX2_VAE_DECODE_BUDGET_GB`), so there is no resolution ceiling to
+   respect; `--diffvae-tile FRAMES HEIGHT WIDTH` overrides the tile size through
+   **Extra arguments** if you ever need to. It is refused with an explanation on
+   models without the decoder weights, and on live preview, which decodes one
+   window per step and needs the conv decoder.
 4. **Render** (or ⌘/Ctrl+Enter) queues the job; **Queue 3 seeds** (⇧⌘/Ctrl+Enter)
    queues three random seeds and opens them side by side when they finish (see
    [Comparing takes](#comparing-takes)). Both sit in the render bar pinned to the

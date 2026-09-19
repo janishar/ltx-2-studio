@@ -312,6 +312,18 @@ def _resolve_num_frames_arg(args: argparse.Namespace) -> int | AutoDuration:
     return DEFAULT_AUTO_DURATION
 
 
+def _diffvae_weight_bytes(path: Path) -> int:
+    """Bytes the diffusion decoder's weights occupy, charged against the decode budget.
+
+    A virtual pack's placeholder is a header-only file, so its size says nothing about
+    the official weights behind it -- 31 KB standing for 0.8 GB. Charging the file size
+    would leave the tile sizer that much headroom it does not have.
+    """
+    from ltx_core_mlx.loader.official_pack import virtual_component_nbytes
+
+    return virtual_component_nbytes(path) or path.stat().st_size
+
+
 def _require_diffusion_decoder_preconditions(args: argparse.Namespace, model_dir: str) -> None:
     """Reject an unusable ``--video-decoder diffusion`` request before any generation runs.
 
@@ -394,7 +406,9 @@ def _validate_diffvae_tiling(path: Path, f: int, h: int, w: int, override: tuple
     geometry = DiffusionTileGeometry.from_config(cfg)
     fhw = padded_latent_fhw(cfg, (f, h, w))
     if override is None:
-        auto_tile_config(geometry, fhw, budget_bytes=diffusion_decode_budget_bytes(), weight_bytes=path.stat().st_size)
+        auto_tile_config(
+            geometry, fhw, budget_bytes=diffusion_decode_budget_bytes(), weight_bytes=_diffvae_weight_bytes(path)
+        )
     elif override == (0, 0, 0):
         _DiffusionVideoDecoder.check_size((1, 128, f, h, w))
     else:

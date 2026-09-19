@@ -43,6 +43,11 @@ for per-pipeline stability guarantees.
     API each refuse the combination up front rather than silently using conv.
   - ltx studio exposes it as **Video decoder** on the generate tasks, refused with
     an explanation on models without the weights and when live preview is on.
+  - **Tiled decode** (synced from upstream 0.15.6+, `effd115`): the decode is tiled
+    automatically to fit `LTX2_VAE_DECODE_BUDGET_GB` (default: half of unified
+    memory), so there is no longer a resolution ceiling —
+    `LTX2_DIFFVAE_MAX_TOKENS` now applies only to a forced one-tile decode.
+    `--diffvae-tile FRAMES HEIGHT WIDTH` overrides the tile size.
 - **Generated keyframe slots** (`generate --num-generated-keyframes N`, LTX-2.5),
   synced from upstream ltx-2-mlx 0.15.5: N evenly spaced single-pixel-frame slots
   denoised with stage 1, on all four generate modes; refused before any Gemma load
@@ -51,6 +56,13 @@ for per-pipeline stability guarantees.
 
 ### Fixed
 
+- Diffusion decoder tile sizing on **official weights**: the decode budget charged
+  the placeholder file's size (~32 KB) instead of the 0.78 GB of weights behind it,
+  leaving the tile sizer that much headroom it did not have.
+- `virtual_source_info` / `is_virtual_file` raised `MemoryError` on a file that is
+  not safetensors (eight junk bytes decode to a header length near `2**63`, and the
+  read was unbounded) instead of answering "not virtual". The header read is now
+  bounded by the file size.
 - Test suite: MLX 0.32 turns on TF32 for fp32 GPU matmuls by default (~8e-4
   relative error), which broke the fp32 numerics tests against their numpy
   references. `tests/conftest.py` restores true fp32 for the test session;
