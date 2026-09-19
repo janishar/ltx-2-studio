@@ -66,6 +66,8 @@ SIZE_PRESETS: dict[str, tuple[int, int]] = {
 
 OFFICIAL_DISTILLED = "ltx-2.5-22b-distilled-transformer-bf16.safetensors"
 OFFICIAL_DEV = "ltx-2.5-22b-dev-transformer-bf16.safetensors"
+#: The official AV video VAE, which carries the LTX-2.5 diffusion video decoder.
+OFFICIAL_VIDEO_VAE_AV = "ltx-2.5-video-vae-bf16.safetensors"
 
 #: Generation pipelines of ``generate`` and whether they need the dev transformer.
 GENERATE_PIPELINES: dict[str, tuple[str, bool]] = {
@@ -114,9 +116,18 @@ class ModelInfo:
     has_distilled: bool
     has_dev: bool
     is_25: bool
+    #: The model carries the LTX-2.5 diffusion video decoder
+    #: (``vae_decoder_av.safetensors``, or the official AV video VAE).
+    has_diffusion_decoder: bool = False
 
     def missing_dev_reason(self) -> str:
         return "needs the dev transformer (not found in model)"
+
+    def missing_diffusion_decoder_reason(self) -> str:
+        return (
+            "needs the LTX-2.5 diffusion video decoder, which this model does not have "
+            f"(expected {OFFICIAL_VIDEO_VAE_AV} or vae_decoder_av.safetensors)"
+        )
 
 
 def _walk_names(root: Path) -> set[str]:
@@ -135,7 +146,7 @@ def inspect_model(model: str) -> ModelInfo:
     """
     path = Path(model).expanduser()
     if not path.is_dir():
-        return ModelInfo(model, local=False, has_distilled=True, has_dev=True, is_25=False)
+        return ModelInfo(model, local=False, has_distilled=True, has_dev=True, is_25=False, has_diffusion_decoder=True)
 
     names = _walk_names(path)
     official = OFFICIAL_DISTILLED in names or OFFICIAL_DEV in names
@@ -149,12 +160,24 @@ def inspect_model(model: str) -> ModelInfo:
     if not is_25 and config.exists():
         with contextlib.suppress(OSError, json.JSONDecodeError):
             is_25 = json.loads(config.read_text()).get("transformer", {}).get("ff_bias") is False
-    return ModelInfo(model, local=True, has_distilled=has_distilled, has_dev=has_dev, is_25=is_25)
+    has_diffusion_decoder = OFFICIAL_VIDEO_VAE_AV in names or "vae_decoder_av.safetensors" in names
+    return ModelInfo(
+        model,
+        local=True,
+        has_distilled=has_distilled,
+        has_dev=has_dev,
+        is_25=is_25,
+        has_diffusion_decoder=has_diffusion_decoder,
+    )
 
 
-def mode_availability(info: ModelInfo, mode: str, pipeline: str = "distilled") -> str | None:
+def mode_availability(
+    info: ModelInfo, mode: str, pipeline: str = "distilled", video_decoder: str = "conv"
+) -> str | None:
     """Return why ``mode`` cannot run on ``info``, or ``None`` if it can."""
     if mode in GENERATE_MODES:
+        if video_decoder == "diffusion" and not info.has_diffusion_decoder:
+            return info.missing_diffusion_decoder_reason()
         _, needs_dev = GENERATE_PIPELINES[pipeline]
         if needs_dev and not info.has_dev:
             return f"--pipeline {pipeline} " + info.missing_dev_reason()
@@ -262,6 +285,10 @@ def _common(args: argparse.Namespace, subcommand: str, output: Path) -> list[str
     argv += ["--quantize-on-load", args.quantize]
     if args.low_ram:
         argv.append("--low-ram")
+    # Only `generate` has --video-decoder; the other subcommands would reject it.
+    video_decoder = getattr(args, "video_decoder", "conv")
+    if subcommand == "generate" and video_decoder != "conv":
+        argv += ["--video-decoder", video_decoder]
     return argv
 
 
@@ -507,6 +534,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--strength", type=float, default=1.0, help="image / control conditioning strength")
     g.add_argument("--low-ram", action="store_true", help="block streaming (converted packs only)")
     g.add_argument("--no-audio", action="store_true", help="skip audio decode/mux (generate modes)")
+    g.add_argument(
+        "--video-decoder",
+        choices=["conv", "diffusion"],
+        default="conv",
+        help="video VAE decoder for generate modes: conv (default) or the LTX-2.5 diffusion decoder",
+    )
     g.add_argument("--dry-run", action="store_true", help="print the ltx-2-mlx command without running it")
 
 
@@ -601,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_demo(args)
 
     info = inspect_model(args.model)
-    reason = mode_availability(info, args.mode, args.pipeline)
+    reason = mode_availability(info, args.mode, args.pipeline, args.video_decoder)
     if reason is not None:
         if not args.dry_run:
             raise SystemExit(f"error: {args.mode} {reason} (use --dry-run to see the command anyway)")

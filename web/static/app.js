@@ -168,7 +168,8 @@ function renderField(field, values, rerender) {
       const select = el("select", { onchange: (e) => set(e.target.value, true) },
         field.options.map(([value, text]) => el("option", { value, text })));
       select.value = values[field.key] ?? field.default ?? field.options[0][0];
-      return el("label", { class: "field" }, label, select);
+      return el("label", { class: `field${field.hint ? " full" : ""}` }, label, select,
+        field.hint ? el("em", { class: "field-hint", text: field.hint }) : null);
     }
     case "check":
       return el("label", { class: "check full" },
@@ -237,10 +238,11 @@ function renderRows(field, values, rerender) {
   return wrap;
 }
 
-/** What task.requires() may check beyond the task values: the clip length, unless auto duration decides it. */
+/** What task.requires() may check beyond the task values: the clip length (unless auto duration decides it) and whether live preview is on. */
 function requiresContext(task) {
   const auto = (task.blocks || {}).duration === "auto" && S.common.autoDuration;
-  return { frames: S.common.frames, autoDuration: auto };
+  const preview = PREVIEW_COMMANDS.has(task.cmd) && S.common.preview.enabled;
+  return { frames: S.common.frames, autoDuration: auto, preview };
 }
 
 function renderAvailability() {

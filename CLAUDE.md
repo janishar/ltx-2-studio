@@ -288,7 +288,7 @@ Key reference paths:
 
 Weight conversion for packs is done by mlx-forge, outside this repo. The runtime loads pre-converted weights only.
 
-**Exception — official LTX-2.5 files** (`ltx_core_mlx/loader/official_pack.py`): when `--model` is a directory of the official Lightricks files, `resolve_model_dir` builds a *virtual pack* in `<repo>/.cache/virtual-packs/` (configs, tokenizer assets, and header-only placeholder `.safetensors` files whose metadata names the source). `load_split_safetensors` converts placeholders in memory using mlx-forge's rules (vendored, not reimplemented) and quantizes per `--quantize-on-load {8,4,none}` (env `LTX_MLX_QUANTIZE_ON_LOAD`). Nothing converted is written to disk. Keep those rules in sync with mlx-forge's `recipes/ltx_25.py` and bump `VIRTUAL_PACK_FORMAT` when they change. Not supported on virtual packs: `--low-ram` (BlockStreamer reads the file directly).
+**Exception — official LTX-2.5 files** (`ltx_core_mlx/loader/official_pack.py`): when `--model` is a directory of the official Lightricks files, `resolve_model_dir` builds a *virtual pack* in `<repo>/.cache/virtual-packs/` (configs, tokenizer assets, and header-only placeholder `.safetensors` files whose metadata names the source). `load_split_safetensors` converts placeholders in memory using mlx-forge's rules (vendored, not reimplemented) and quantizes per `--quantize-on-load {8,4,none}` (env `LTX_MLX_QUANTIZE_ON_LOAD`). Nothing converted is written to disk. Keep those rules in sync with mlx-forge's `recipes/ltx_25.py` and bump `VIRTUAL_PACK_FORMAT` when they change. The optional `ltx-2.5-video-vae-bf16.safetensors` (the AV video VAE) becomes `vae_encoder_av` + `vae_decoder_av`, so `--video-decoder diffusion` works on official weights; a download without it still resolves, minus those two files. Not supported on virtual packs: `--low-ram` (BlockStreamer reads the file directly).
 
 ### 5. Positions Must Be in Pixel-Space
 
@@ -1094,7 +1094,9 @@ Lightricks publishes the official 2.5 task IC-LoRAs.
 
 ### Diffusion video decoder (`--video-decoder diffusion`, 2.5 packs, experimental)
 
-Port of upstream `NADiffusionDecoder` (`vae_decoder_av.safetensors`, already in every 2.5 pack):
+Port of upstream `NADiffusionDecoder` (`vae_decoder_av.safetensors`, in every mlx-forge 2.5 pack; on
+official weights it is carved out of `ltx-2.5-video-vae-bf16.safetensors` by `official_pack.py`, and a
+download lacking that file simply has no diffusion decoder):
 a Linear-only transformer decoder — four deterministic neighborhood-attention stages on the latent
 grid with pixel-shuffle upsamples, then eight AdaLN-modulated diffusion blocks at pixel/4
 resolution (kernel 11×11×11), one evaluation at `t = 1` on pure noise, `x0` output = pixels.
@@ -1118,6 +1120,14 @@ also complete: 512×768×25 (614,400 stage-5 tokens) in 175.3s total / 50.8s dec
 Metal buffers and is what lifted the earlier `[metal::malloc] Resource limit (499000) exceeded`
 ceiling. 512×768×49 is the largest shape measured and is now the `LTX2_DIFFVAE_MAX_TOKENS`
 default; beyond it the single-tile decode is unverified (tiling follow-up, PR B).
+
+**Mutually exclusive with stepwise previews** (fork): `utils/stepwise.py` decodes one latent window per
+step through `video_decoder_block.load().decode(...)`, which this decoder has no cheap equivalent for —
+a preview would cost a full stage-5 evaluation. `generate` refuses the combination before any work
+starts, ltx studio refuses it in the task form, and `_DiffusionVideoDecoder.decode` raises for direct
+API callers. `BasePipeline.video_decoder` is a property that configures the decoder block on assignment:
+previews call `load()` mid-denoise, and `VideoDecoder.load()` caches the first backend it is asked for,
+so deferring the choice to `_load_decoders()` made a preview run silently decode with conv.
 
 ### Key Files
 

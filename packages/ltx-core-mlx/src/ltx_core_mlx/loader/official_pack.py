@@ -44,7 +44,7 @@ from pathlib import Path
 import mlx.core as mx
 
 # Bump when the conversion rules change, so stale virtual packs are rebuilt.
-VIRTUAL_PACK_FORMAT = 1
+VIRTUAL_PACK_FORMAT = 2
 
 VIRTUAL_METADATA_KEY = "ltx_mlx_virtual_source"
 QUANTIZE_ENV = "LTX_MLX_QUANTIZE_ON_LOAD"
@@ -63,6 +63,7 @@ OFFICIAL_FILENAMES: dict[str, str] = {
     "transformer_dev": "ltx-2.5-22b-dev-transformer-bf16.safetensors",
     "text_encoder": "gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
     "video_vae_conv": "ltx-2.5-video-vae-conv-bf16.safetensors",
+    "video_vae_av": "ltx-2.5-video-vae-bf16.safetensors",
     "audio_vae": "ltx-2.5-audio-vae-bf16.safetensors",
     "spatial_upscaler": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
     "temporal_upscaler": "ltx-2.5-latent-temporal-upscaler-x2-bf16-1.0.safetensors",
@@ -152,17 +153,26 @@ def sanitize_connector_key(key: str) -> str | None:
     return key.replace("model.diffusion_model.", "")
 
 
-def classify_vae_encoder_key(key: str) -> str | None:
-    # mlx-forge routes per_channel_statistics to the decoder and then copies
-    # them into the encoder (_share_video_vae_statistics); both halves get them.
+def classify_vae_encoder_key(key: str, suffix: str) -> str | None:
+    """Route an encoder key to ``vae_encoder{suffix}`` (mlx-forge ``classify_video_vae_key``).
+
+    ``suffix`` is ``"_conv"`` or ``"_av"`` and comes from the pack file entry: the key
+    alone cannot say which of the two official video VAE files it came from, and neither
+    component is ever named plainly.
+
+    mlx-forge routes per_channel_statistics to the decoder and then copies them into the
+    encoder (``_share_video_vae_statistics``). Here each component carries its own rule,
+    so both classifiers claim the statistics directly -- same result, no second pass.
+    """
     if key.startswith("encoder.") or key.startswith("per_channel_statistics."):
-        return "vae_encoder_conv"
+        return f"vae_encoder{suffix}"
     return None
 
 
-def classify_vae_decoder_key(key: str) -> str | None:
+def classify_vae_decoder_key(key: str, suffix: str) -> str | None:
+    """Route a decoder key to ``vae_decoder{suffix}``; see :func:`classify_vae_encoder_key`."""
     if key.startswith("decoder.") or key.startswith("per_channel_statistics."):
-        return "vae_decoder_conv"
+        return f"vae_decoder{suffix}"
     return None
 
 
@@ -345,10 +355,33 @@ COMPONENT_RULES: dict[str, ComponentRule] = {
         should_quantize_gemma,
     ),
     "vae_encoder_conv": ComponentRule(
-        "video_vae_conv", classify_vae_encoder_key, sanitize_vae_encoder_key, maybe_transpose
+        "video_vae_conv",
+        functools.partial(classify_vae_encoder_key, suffix="_conv"),
+        sanitize_vae_encoder_key,
+        maybe_transpose,
     ),
     "vae_decoder_conv": ComponentRule(
-        "video_vae_conv", classify_vae_decoder_key, sanitize_vae_decoder_key, maybe_transpose
+        "video_vae_conv",
+        functools.partial(classify_vae_decoder_key, suffix="_conv"),
+        sanitize_vae_decoder_key,
+        maybe_transpose,
+    ),
+    # The AV file's two halves: a conv encoder and the NADiffusionDecoder. Same
+    # sanitizers as the conv pair (mlx-forge reuses them too); never quantized, like
+    # every other VAE -- load_diffusion_decoder loads strictly into an unquantized
+    # module and then casts to bf16. maybe_transpose is a no-op on the decoder half,
+    # whose tensors are all rank <= 2, and does the real work on the encoder's convs.
+    "vae_encoder_av": ComponentRule(
+        "video_vae_av",
+        functools.partial(classify_vae_encoder_key, suffix="_av"),
+        sanitize_vae_encoder_key,
+        maybe_transpose,
+    ),
+    "vae_decoder_av": ComponentRule(
+        "video_vae_av",
+        functools.partial(classify_vae_decoder_key, suffix="_av"),
+        sanitize_vae_decoder_key,
+        maybe_transpose,
     ),
     "audio_vae": ComponentRule("audio_vae", classify_audio_key, sanitize_audio_vae_key, maybe_transpose),
     "vocoder": ComponentRule("audio_vae", classify_audio_key, sanitize_vocoder_key, maybe_transpose),
@@ -376,6 +409,8 @@ _PACK_FILES: tuple[tuple[str, str, str], ...] = (
     ("text_encoder.safetensors", "text_encoder", "text_encoder"),
     ("vae_encoder_conv.safetensors", "vae_encoder_conv", "video_vae_conv"),
     ("vae_decoder_conv.safetensors", "vae_decoder_conv", "video_vae_conv"),
+    ("vae_encoder_av.safetensors", "vae_encoder_av", "video_vae_av"),
+    ("vae_decoder_av.safetensors", "vae_decoder_av", "video_vae_av"),
     ("audio_vae.safetensors", "audio_vae", "audio_vae"),
     ("vocoder.safetensors", "vocoder", "audio_vae"),
     ("duration_head.safetensors", "duration_head", "duration_head"),

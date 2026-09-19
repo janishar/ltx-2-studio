@@ -3,6 +3,13 @@
 import os
 from pathlib import Path
 
+# MLX >= 0.32 enables TF32 for fp32 GPU matmuls by default, which costs ~8e-4 relative
+# accuracy (a 10-bit mantissa) and is well outside the fp32 tolerances the numerics unit
+# tests compare against their numpy references with. Production is unaffected -- every
+# model runs in bf16 -- so restore true fp32 for the test session only. Must be set
+# before mlx is first imported, which is why it lives at the top of conftest.
+os.environ.setdefault("MLX_ENABLE_TF32", "0")
+
 # Weight-gated tests skip unless these point at local MLX packs (mlx-forge layout).
 Q8_MODEL_ENV = "LTX_TEST_MODEL_DIR"  # LTX-2.3 int8 pack
 LTX25_PACK_ENV = "LTX_TEST_LTX25_PACK_DIR"  # LTX-2.5 int8 pack

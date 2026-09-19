@@ -119,6 +119,11 @@ installs for the debugger), **test: fast suite** (default test task) and
    latent frame of stage-1 tokens; 0 (the default) turns it off. The option is
    refused with an explanation on LTX-2.3 packs or when the clip has fewer than
    N + 2 frames.
+   **Video decoder** (Advanced) picks how latents become pixels: **Conv** (the
+   default) or **Diffusion**, the LTX-2.5 `NADiffusionDecoder` — sharper on fine
+   detail, several times slower, and capped at 512×768×49. It is refused with an
+   explanation on models without the decoder weights, and on live preview, which
+   decodes one window per step and needs the conv decoder.
 4. **Render** (or ⌘/Ctrl+Enter) queues the job; **Queue 3 seeds** (⇧⌘/Ctrl+Enter)
    queues three random seeds and opens them side by side when they finish (see
    [Comparing takes](#comparing-takes)). Both sit in the render bar pinned to the

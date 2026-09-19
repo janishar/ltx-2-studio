@@ -44,14 +44,21 @@ import yaml
 
 model, weights = Path(sys.argv[1]).expanduser(), Path(sys.argv[2])
 manifest = yaml.safe_load(Path("helmstudio.yaml").read_text())
-for declared in next(weight for weight in manifest["weights"] if weight["name"] == "ltx")["files"]:
-    found = sorted(model.rglob(Path(declared).name))
-    if not found:
-        sys.exit(f"weights: {Path(declared).name} is not under {model}")
-    link = weights / declared
-    link.parent.mkdir(parents=True, exist_ok=True)
-    link.unlink(missing_ok=True)
-    link.symlink_to(found[0])
+# Every declared weight, not just the base set: the optional ones (dev transformer,
+# AV video VAE) are what --dev-transformer and --video-decoder diffusion need, and a
+# model without them must still link, so a missing optional file is skipped.
+for weight in manifest["weights"]:
+    optional = weight.get("optional", False)
+    for declared in weight["files"]:
+        found = sorted(model.rglob(Path(declared).name))
+        if not found:
+            if optional:
+                continue
+            sys.exit(f"weights: {Path(declared).name} is not under {model}")
+        link = weights / declared
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.unlink(missing_ok=True)
+        link.symlink_to(found[0])
 PY
   set -- -link "ltx=$RUN/weights/ltx-2.5" "$@"
 fi

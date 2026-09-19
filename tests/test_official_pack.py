@@ -87,6 +87,20 @@ def official_dir(tmp_path: Path) -> Path:
         },
     )
     _write_safetensors(
+        root / "vae" / op.OFFICIAL_FILENAMES["video_vae_av"],
+        {
+            # The encoder half shares the file and must not reach the pack.
+            "encoder.conv_in.conv.weight": _rand(8, 3, 3, 3, 3),
+            "decoder.conv_in.weight": _rand(16, 8),
+            "decoder.det_stages.0.0.attn.qkv.weight": _rand(48, 16),
+            "decoder.diff_blocks.0.scale_shift_table": _rand(7, 16),
+            "decoder.type_emb": _rand(8),
+            "per_channel_statistics.mean-of-means": _rand(8),
+            "per_channel_statistics.std-of-means": _rand(8),
+        },
+        {"config": json.dumps({"vae": {"decoder": {"_class_name": "NADiffusionDecoder"}}})},
+    )
+    _write_safetensors(
         root / "vae" / op.OFFICIAL_FILENAMES["audio_vae"],
         {
             "audio_vae.decoder.conv_in.conv.weight": _rand(8, 4, 3, 3),
@@ -139,6 +153,7 @@ def test_virtual_pack_sidecars(pack: Path):
         "transformer.safetensors",
         "connector.safetensors",
         "vae_decoder_conv.safetensors",
+        "vae_decoder_av.safetensors",
         "duration_head.safetensors",
     ):
         assert op.is_virtual_file(pack / name)
@@ -223,6 +238,50 @@ def test_bf16_mode_writes_no_quantization(official_dir: Path, tmp_path: Path, mo
     assert not any(k.endswith(".scales") for k in weights)
 
 
+def test_diffusion_decoder_is_the_decoder_half_unquantized(pack: Path, official_dir: Path):
+    """``ltx-2.5-video-vae-bf16`` becomes ``vae_decoder_av.safetensors``: decoder half, as-is."""
+    from ltx_core_mlx.utils.weights import load_split_safetensors
+
+    weights = load_split_safetensors(pack / "vae_decoder_av.safetensors", prefix="vae_decoder_av.")
+    assert set(weights) == {
+        "conv_in.weight",
+        "det_stages.0.0.attn.qkv.weight",
+        "diff_blocks.0.scale_shift_table",
+        "type_emb",
+        "per_channel_statistics.mean",
+        "per_channel_statistics.std",
+    }
+    # Linear-only: nothing is transposed on the way in, unlike the conv decoder.
+    source = mx.load(str(official_dir / "vae" / op.OFFICIAL_FILENAMES["video_vae_av"]))
+    assert mx.array_equal(weights["conv_in.weight"], source["decoder.conv_in.weight"])
+    # Never quantized -- load_diffusion_decoder loads strictly into an unquantized module.
+    header = op.read_safetensors_header(pack / "vae_decoder_av.safetensors")[0]
+    assert not [key for key in header if key.endswith((".scales", ".biases"))]
+
+
+def test_diffusion_decoder_config_reaches_the_placeholder(pack: Path):
+    """``DiffusionDecoderConfig.from_safetensors_metadata`` reads the pack file, not the source."""
+    from ltx_core_mlx.model.video_vae.diffusion_decoder import DiffusionDecoderConfig
+
+    metadata = op.read_safetensors_header(pack / "vae_decoder_av.safetensors")[1]
+    assert json.loads(metadata["config"])["vae"]["decoder"]["_class_name"] == "NADiffusionDecoder"
+    # The synthetic config carries only the class name, so the real read raises on the
+    # missing fields rather than silently falling back -- proof it reads this file.
+    with pytest.raises(KeyError):
+        DiffusionDecoderConfig.from_safetensors_metadata(pack / "vae_decoder_av.safetensors")
+
+
+def test_the_av_vae_is_optional(official_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A download without the diffusion decoder still resolves; the pack just omits it."""
+    (official_dir / "vae" / op.OFFICIAL_FILENAMES["video_vae_av"]).unlink()
+    monkeypatch.setenv(op.CACHE_ENV, str(tmp_path / "cache-no-av"))
+    monkeypatch.setenv(op.QUANTIZE_ENV, "8")
+    op._resolve_cached.cache_clear()
+    pack = op.resolve_official_model_dir(official_dir)
+    assert (pack / "vae_decoder_conv.safetensors").exists()
+    assert not (pack / "vae_decoder_av.safetensors").exists()
+
+
 _OFFICIAL_DIR = os.environ.get("LTX25_OFFICIAL_DIR")
 
 
@@ -243,6 +302,8 @@ def test_real_download_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     expected = {
         "vae_encoder_conv": 86,
         "vae_decoder_conv": 86,
+        "vae_encoder_av": 86,
+        "vae_decoder_av": 312,
         "audio_vae": 102,
         "vocoder": 1227,
         "duration_head": 15,

@@ -365,6 +365,8 @@ ltx-2-mlx generate   Text/image → video
   --cfg-scale / --stg-scale   Guidance (dev pipelines)
   --lora PATH STRENGTH   LoRA, repeatable
   --no-audio             Skip audio decode and mux
+  --video-decoder {conv,diffusion}   Video VAE decoder; diffusion is the LTX-2.5
+                         NADiffusionDecoder (sharper, slower, single tile)
   --low-ram              Block streaming (converted packs)
   --tile-frames / --tile-spatial / --tile-overlap   Modality tiling
   --enhance-prompt       Rewrite the prompt with Gemma 3 first

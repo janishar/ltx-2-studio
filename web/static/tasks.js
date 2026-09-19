@@ -39,6 +39,12 @@ const GENERATE_ADVANCED = [
   { key: "generatedKeyframes", label: "Generated keyframes", type: "number", min: 0, max: 16, step: 1, placeholder: "0 = off",
     hint: "LTX-2.5 · extra keyframes at evenly spaced interior frames sharpen fast motion; each adds one latent frame of stage-1 tokens",
     advanced: false },
+  { key: "videoDecoder", label: "Video decoder", type: "select", default: "conv", advanced: true,
+    hint: "LTX-2.5 · diffusion is sharper on fine detail but several times slower, and capped at 512×768×49",
+    options: [
+      ["conv", "Conv — default"],
+      ["diffusion", "Diffusion — sharper, slower"],
+    ] },
   { key: "steps", label: "Steps", type: "number", min: 1, max: 100, placeholder: "8", when: { pipeline: ["one-stage"] }, advanced: true },
   { key: "stage1Steps", label: "Stage 1 steps", type: "number", min: 1, max: 100, placeholder: "30 / 15 HQ", when: { pipeline: ["two-stage", "two-stages-hq"] }, advanced: true },
   { key: "stage2Steps", label: "Stage 2 steps", type: "number", min: 1, max: 3, placeholder: "3", when: { pipeline: ["two-stage", "two-stages-hq"] }, advanced: true },
@@ -83,6 +89,7 @@ function generateArgs(v, ctx) {
     optText(args, "--dev-transformer", v.devTransformer);
   }
   if ((num(v.generatedKeyframes) || 0) > 0) args.push("--num-generated-keyframes", String(Math.round(num(v.generatedKeyframes))));
+  if ((v.videoDecoder || "conv") !== "conv") args.push("--video-decoder", v.videoDecoder);
   flag(args, "--enhance-prompt", v.enhancePrompt);
   flag(args, "--no-audio", v.noAudio);
   loraArgs(args, v.loras);
@@ -103,6 +110,14 @@ function generateRequires(v, model, ctx = {}) {
   if ((v.pipeline || "distilled") === "distilled" && !model.has_distilled) return "The distilled pipeline needs the distilled transformer.";
   if (v.enhancePrompt && model.is_25) return "--enhance-prompt uses Gemma 3 and is not supported on LTX-2.5 packs.";
   if (v.teacache && model.is_25) return "TeaCache is not calibrated for LTX-2.5.";
+  // A Hugging Face repo id isn't inspected; the CLI refuses it up front if the pack lacks the weights.
+  if ((v.videoDecoder || "conv") === "diffusion") {
+    if (model.local && !model.has_diffusion_decoder) {
+      return "The diffusion video decoder ships with LTX-2.5 models only (no vae_decoder_av weights here).";
+    }
+    // A preview decodes one window per step; the diffusion decoder takes tens of seconds to do that.
+    if (ctx.preview) return "Live preview needs the conv decoder — turn preview off to use the diffusion decoder.";
+  }
   return null;
 }
 

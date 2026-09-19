@@ -218,3 +218,47 @@ def test_oversized_diffusion_target_fails_before_any_pipeline_is_built(monkeypat
     args = _diffusion_args(tmp_path, "-f", "97", "-H", "768", "-W", "1280")
     with pytest.raises(ValueError, match="LTX2_DIFFVAE_MAX_TOKENS"):
         _cmd_generate(args)
+
+
+# --- fork: the diffusion decoder must not collide with ltx studio's live previews ---
+
+
+def test_selecting_the_backend_configures_the_block_immediately():
+    """Previews load the block mid-denoise, long before ``_load_decoders()`` runs.
+
+    ``VideoDecoder.load()`` caches the first backend it is asked for, so deferring
+    the choice to ``_load_decoders()`` made a preview run silently decode with conv.
+    """
+    p = BasePipeline.__new__(BasePipeline)
+
+    class _Blk:
+        video_decoder = "conv"
+
+    p.video_decoder_block = _Blk()
+    p.video_decoder = "diffusion"
+    assert p.video_decoder_block.video_decoder == "diffusion"
+    assert p.video_decoder == "diffusion"
+
+
+def test_selecting_the_backend_before_the_block_exists_is_safe():
+    p = BasePipeline.__new__(BasePipeline)
+    p.video_decoder = "diffusion"  # no video_decoder_block attribute yet
+    assert p.video_decoder == "diffusion"
+
+
+def test_diffusion_decoder_refuses_the_per_window_preview_decode():
+    """``utils.stepwise`` calls ``decoder_block.load().decode(window)`` every Nth step."""
+    wrapper = B._DiffusionVideoDecoder(object())
+    with pytest.raises(NotImplementedError, match="stepwise previews"):
+        wrapper.decode(mx.zeros((1, 128, 2, 2, 3)))
+
+
+def test_cli_refuses_diffusion_with_stepwise_previews(tmp_path):
+    from ltx_pipelines_mlx.cli import _require_diffusion_decoder_preconditions
+
+    args = _parse("--video-decoder", "diffusion", "--stepwise-image-output-dir", str(tmp_path))
+    with pytest.raises(ValueError, match="stepwise previews"):
+        _require_diffusion_decoder_preconditions(args, _fake_pack(tmp_path))
+    # conv is unaffected: previews stay available on the default path.
+    conv = _parse("--stepwise-image-output-dir", str(tmp_path))
+    _require_diffusion_decoder_preconditions(conv, _fake_pack(tmp_path))

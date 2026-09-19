@@ -81,10 +81,8 @@ class BasePipeline:
     #: with no audio track (``generate --no-audio``, #126). Set by the CLI
     #: after construction, like ``verbose`` / ``stepwise``. Video is unchanged.
     generate_audio: bool = True
-    #: Video VAE decoder backend -- ``"conv"`` (default) or ``"diffusion"``
-    #: (LTX-2.5 ``NADiffusionDecoder``, opt-in, ``generate --video-decoder``).
-    #: Set by the CLI after construction, like ``generate_audio`` / ``verbose``.
-    video_decoder: str = "conv"
+    #: Backing field for the :attr:`video_decoder` property.
+    _video_decoder: str = "conv"
     #: ``(B, C, K, H, W)`` latent of the generated keyframe slots from the last
     #: stage-1 run (``generate --num-generated-keyframes``), or ``None``. Not
     #: decoded by the standard pipelines; kept for keyframe-aware consumers (DFR).
@@ -376,6 +374,27 @@ class BasePipeline:
     def _load_audio_encoder(self) -> None:
         """Load audio VAE encoder + processor via the AudioConditioner block."""
         self.audio_conditioner.load()
+
+    @property
+    def video_decoder(self) -> str:
+        """Video VAE decoder backend -- ``"conv"`` (default) or ``"diffusion"``.
+
+        ``"diffusion"`` selects the LTX-2.5 ``NADiffusionDecoder``
+        (``generate --video-decoder``). Set by the CLI after construction, like
+        ``generate_audio`` / ``verbose``.
+        """
+        return self._video_decoder
+
+    @video_decoder.setter
+    def video_decoder(self, value: str) -> None:
+        self._video_decoder = value
+        # Configure the block immediately rather than leaving it to _load_decoders():
+        # stepwise previews call video_decoder_block.load() *during* denoising, and
+        # VideoDecoder.load() caches whichever backend was selected at that moment.
+        # Deferring the choice made a preview run silently decode with conv.
+        block = getattr(self, "video_decoder_block", None)
+        if block is not None:
+            block.video_decoder = value
 
     def _load_decoders(self) -> None:
         """Load VAE decoder + audio decoder + vocoder via composition blocks.

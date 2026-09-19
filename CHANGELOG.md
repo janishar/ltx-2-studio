@@ -26,11 +26,35 @@ for per-pipeline stability guarantees.
   viewer while denoising, configurable interval, clip length and position, with
   a per-take preview scrubber.
 - VS Code launch, task and settings configurations.
+- **Diffusion video decoder** (`generate --video-decoder diffusion`, LTX-2.5),
+  synced from upstream ltx-2-mlx 0.15.6: an opt-in alternative to the conv VAE
+  decoder that finishes the latent→pixel step with one diffusion evaluation,
+  sharper on fine detail and several times slower. `conv` stays the default and
+  every existing decode path is byte-identical. Single tile in v1, refused above
+  `LTX2_DIFFVAE_MAX_TOKENS` (512×768×49) before any generation starts.
+  - Works on the **official Lightricks LTX-2.5 files**, not just mlx-forge packs:
+    the optional `ltx-2.5-video-vae-bf16.safetensors` now becomes `vae_encoder_av`
+    + `vae_decoder_av` in the virtual pack (`VIRTUAL_PACK_FORMAT` 2, so existing
+    virtual packs rebuild — header-only, seconds). A download without that file
+    still resolves and simply has no diffusion decoder. Note that a *truncated*
+    copy of it now fails every command, as for any other official file.
+  - **Not compatible with live previews**: previews decode one window per step,
+    which this decoder cannot do cheaply. `generate`, ltx studio and the Python
+    API each refuse the combination up front rather than silently using conv.
+  - ltx studio exposes it as **Video decoder** on the generate tasks, refused with
+    an explanation on models without the weights and when live preview is on.
 - **Generated keyframe slots** (`generate --num-generated-keyframes N`, LTX-2.5),
   synced from upstream ltx-2-mlx 0.15.5: N evenly spaced single-pixel-frame slots
   denoised with stage 1, on all four generate modes; refused before any Gemma load
   on packs without `use_keyframes_abs_pos_embedding`. ltx studio exposes it as
   **Generated keyframes** on the generate tasks.
+
+### Fixed
+
+- Test suite: MLX 0.32 turns on TF32 for fp32 GPU matmuls by default (~8e-4
+  relative error), which broke the fp32 numerics tests against their numpy
+  references. `tests/conftest.py` restores true fp32 for the test session;
+  production is unaffected, since every model runs in bf16.
 
 ### Changed
 

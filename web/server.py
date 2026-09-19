@@ -202,7 +202,9 @@ def request_guard(method: str, path: str, headers: Any, allowed_hosts: set[str])
 # ---------------------------------------------------------------------------
 
 #: Task values that change how much work a render does (compared exactly for estimates).
-WORKLOAD_VALUE = re.compile(r"steps|pipeline|teacache|topology|skipStage2|keyframes|^mode$|^cfg$|^stg$", re.IGNORECASE)
+WORKLOAD_VALUE = re.compile(
+    r"steps|pipeline|teacache|topology|skipStage2|keyframes|decoder|^mode$|^cfg$|^stg$", re.IGNORECASE
+)
 
 
 def workload(params: dict[str, Any]) -> dict[str, Any] | None:
@@ -347,6 +349,11 @@ def setup_checks(info: Any) -> list[dict[str, str]]:
             "level": "ok" if transformer else "bad", "label": "transformer",
             "detail": " + ".join(n for n, ok in (("distilled", info.has_distilled), ("dev", info.has_dev)) if ok) or "none found",
         })  # fmt: skip
+        if info.has_diffusion_decoder:
+            checks.append({
+                "level": "ok", "label": "diffusion decoder",
+                "detail": "found — --video-decoder diffusion available",
+            })  # fmt: skip
         official = any(n.startswith("ltx-2.5") for n in names)
         if not official:
             vae = any(n.startswith("vae_decoder") for n in names)
@@ -585,6 +592,7 @@ class State:
             "exists": Path(self.model).expanduser().exists() or not info.local,
             "has_distilled": info.has_distilled,
             "has_dev": info.has_dev,
+            "has_diffusion_decoder": info.has_diffusion_decoder,
             "is_25": info.is_25,
             "gemma": self.gemma or "",
             "checks": checks,

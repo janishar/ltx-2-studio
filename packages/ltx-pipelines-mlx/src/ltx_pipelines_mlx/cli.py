@@ -325,10 +325,18 @@ def _require_diffusion_decoder_preconditions(args: argparse.Namespace, model_dir
 
     Raises:
         FileNotFoundError: The resolved pack has no diffusion decoder weights.
-        ValueError: The target latent exceeds the stage-5 token guard.
+        ValueError: The target latent exceeds the stage-5 token guard, or stepwise
+            previews are on (they decode per step, which this decoder cannot do cheaply).
     """
     if getattr(args, "video_decoder", "conv") != "diffusion":
         return
+
+    if getattr(args, "stepwise_image_output_dir", None):
+        raise ValueError(
+            "--video-decoder diffusion cannot be combined with stepwise previews: a preview "
+            "decodes one window per step, which the diffusion decoder does in tens of seconds "
+            "rather than milliseconds. Drop --video-decoder diffusion, or turn previews off."
+        )
 
     from ltx_core_mlx.components.patchifiers import compute_video_latent_shape
     from ltx_pipelines_mlx.utils.blocks import _DiffusionVideoDecoder, _resolve_model_dir

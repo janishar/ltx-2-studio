@@ -307,6 +307,21 @@ class _DiffusionVideoDecoder:
                 "--video-decoder conv, or raise the limit if you have the memory (~6 x tokens x 512 bytes peak)."
             )
 
+    def decode(self, latent: mx.array) -> mx.array:
+        """Refuse the conv decoder's per-window decode, which stepwise previews use.
+
+        A conv ``decode`` of one preview window costs milliseconds; the diffusion
+        equivalent is a full stage-5 evaluation (tens of seconds), so previewing
+        every step would dominate the render. ``generate`` refuses the combination
+        up front -- this keeps the Python API from failing with ``AttributeError``.
+        """
+        del latent
+        raise NotImplementedError(
+            "the diffusion video decoder has no per-window decode(): stepwise previews and "
+            "--video-decoder diffusion are mutually exclusive. Use --video-decoder conv for "
+            "previews, or turn previews off."
+        )
+
     def decode_and_stream(
         self,
         video_latent: mx.array,
