@@ -76,6 +76,7 @@ class FakeHelmstudio:
         self.asset_rows: dict[str, dict[str, Any]] = {}
         self.blobs: dict[str, bytes] = {}
         self.items: dict[str, dict[str, Any]] = {}
+        self.timelines: dict[str, dict[str, Any]] = {}
         self.records: dict[str, list[dict[str, Any]]] = {}
         self.kv: dict[tuple[str, str], dict[str, Any]] = {}
         self.job_rows: dict[str, dict[str, Any]] = {}
@@ -96,6 +97,7 @@ class FakeHelmstudio:
             gallery=SimpleNamespace(add=self._gallery_add, query=self._gallery_query,
                                     update=lambda id, body: self.items[id].update(body),
                                     delete=lambda id: self.items[id].update(deleted=True)),
+            timeline=SimpleNamespace(list=self._timeline_list),
             jobs=SimpleNamespace(create=self._job_create, update=self._job_update, append_log=self._append_log,
                                  list=self._jobs_list, logs=self._job_log),
             events=SimpleNamespace(subscribe=self._subscribe),
@@ -201,6 +203,20 @@ class FakeHelmstudio:
         found = [item for item in reversed(self.items.values()) if not item.get("deleted")
                  and session_id in (None, item["session_id"]) and kind in (None, item["kind"])]  # fmt: skip
         return self._page(found, limit, cursor)
+
+    # timeline
+    def add_sequence(self, name: str, clips: list[dict[str, Any]], **fields: Any) -> dict[str, Any]:
+        """A sequence helmstudio holds for this studio, as ``GET /timeline`` answers with it."""
+        row = {"id": self._id(), "name": name, "revision": 1, "duration_s": None, "etag": "e",
+               "target": {"width": 704, "height": 448, "fps": 24, "sample_rate": 48000},
+               "created_at": f"t{next(self.clock)}", "updated_at": f"t{next(self.clock)}",
+               "tracks": [{"kind": "video", "name": "V1", "clips": clips}]}  # fmt: skip
+        row.update(fields)
+        self.timelines[row["id"]] = row
+        return copy.deepcopy(row)
+
+    def _timeline_list(self, *, limit: int, cursor: str | None = None) -> dict[str, Any]:
+        return self._page(list(reversed(self.timelines.values())), limit, cursor)
 
     # jobs
     def _job_create(self, body: dict[str, Any]) -> dict[str, Any]:

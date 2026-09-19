@@ -1028,7 +1028,12 @@ class State:
                  "probe": probe, "added": now_iso()}  # fmt: skip
         return {"name": self.put_input(session, name, entry)}
 
-    # timeline: sequences exported from helmstudio's timeline --------------
+    # timeline: the sequences helmstudio keeps, and the files exported from them
+    # ----------------------------------------------------------------------
+    # Two different things under one word. An export is a file in the gallery,
+    # rendered from a sequence; a sequence is the edit itself, which helmstudio
+    # keeps and the editor changes. The panel lists both, each row says which it
+    # is, and each is offered only the actions that can work on it.
     def _export(self, item: dict[str, Any]) -> dict[str, Any]:
         asset = item.get("asset") or {}
         return {
@@ -1050,9 +1055,63 @@ class State:
             raise ValueError("sequence not found")
         return item
 
+    @staticmethod
+    def _sequence_clips(sequence: dict[str, Any]) -> list[dict[str, Any]]:
+        """V1's clips in order: where each asset's bytes are, and the part of them the clip uses.
+
+        The audio tracks are left out because the page plays each clip's own
+        sound with it and cannot mix tracks; an export is what to play when the
+        whole edit has to be heard as it was cut.
+        """
+        video = next((track for track in sequence.get("tracks") or [] if track.get("kind") == "video"), None)
+        clips = []
+        for clip in (video or {}).get("clips") or []:  # V1 is the one video track (helmstudio 05 §6)
+            # Through this studio's own /helm/ proxy, which holds the token the
+            # page does not and passes Range through, so the player can seek.
+            part = {"asset_id": clip["asset_id"], "url": asset_url(clip["asset_id"])}
+            part.update({edge: clip[edge] for edge in ("in", "out") if clip.get(edge) is not None})
+            clips.append(part)
+        return clips
+
+    def _sequence(self, sequence: dict[str, Any]) -> dict[str, Any]:
+        """A sequence, as the panel lists it: an edit helmstudio keeps, not a file here.
+
+        So it carries no url of its own and none of the actions that read or
+        delete a file in this session. What it carries instead is its clips, so
+        the viewer can play the edit as it stands without waiting on an export.
+        """
+        clips = self._sequence_clips(sequence)
+        target = sequence.get("target") or {}
+        return {
+            "name": sequence.get("name") or "sequence", "kind": "timeline",
+            "created": sequence.get("updated_at") or sequence.get("created_at"),
+            "thumb": thumb_url(clips[0]["asset_id"]) if clips else None,
+            "meta": {"source": "helmstudio", "timeline_id": sequence["id"], "clips": clips,
+                     "duration_s": sequence.get("duration_s"),
+                     "width": target.get("width"), "height": target.get("height")},
+        }  # fmt: skip
+
+    def _sequences(self) -> list[dict[str, Any]]:
+        """The sequences helmstudio holds for this studio, newest first.
+
+        ``GET /timeline`` answers with the caller's own sequences, and with
+        every studio's only for a caller holding ``gallery.read_all``, which ltx
+        studio does not ask for: what comes back is exactly this studio's. A
+        refusal is not the panel's to fail on — the exports above it are still
+        worth showing — so it is logged and read as none.
+        """
+        try:
+            return list(pages(lambda **page: self.client.timeline.list(**page)))
+        except HelmError as exc:
+            print(f"[helmstudio] listing sequences: {exc}", flush=True)
+            return []
+
     def list_timeline(self, session: str) -> list[dict[str, Any]]:
-        """Every exported sequence. A sequence belongs to no session, so each session lists them all."""
-        return [self._export(item) for item in self._exports()]
+        """Every exported sequence, then every sequence helmstudio holds for this studio.
+
+        Neither belongs to a session, so each session lists them all.
+        """
+        return [self._export(item) for item in self._exports()] + [self._sequence(t) for t in self._sequences()]
 
     def delete_timeline(self, session: str, name: str) -> None:
         self.client.gallery.delete(self._find_export(name)["id"])

@@ -360,9 +360,7 @@ body.resizing { cursor: ns-resize; user-select: none; }
 .helmstudio-gallery { width: min(1100px, 92vw); height: min(760px, 88vh); }
 .helmstudio-timeline { width: 96vw; max-width: 1600px; height: min(820px, 92vh); }
 .helmstudio-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--helm-space-2); padding: var(--helm-space-3) var(--helm-space-4); border-bottom: 1px solid var(--helm-border-hairline); }
-.helmstudio-head select { max-width: 40ch; }
 .helmstudio-title { margin: 0; font: var(--helm-type-title); }
-.helmstudio-label { font: var(--helm-type-micro); color: var(--helm-text-secondary); }
 .helmstudio-status { font: var(--helm-type-body); color: var(--helm-text-secondary); }
 .helmstudio-spacer { flex: 1; }
 .helmstudio-empty { margin: var(--helm-space-5) var(--helm-space-4); color: var(--helm-text-secondary); }

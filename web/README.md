@@ -141,8 +141,9 @@ installs for the debugger), **test: fast suite** (default test task) and
    or control) or its **Last frame** into inputs. The **⋮** menu adds the first
    frame, the audio track (for audio → video), **Previews (N)**, **Add to compare**,
    **Download** and **Delete…**. ☆ stars a take and **★ starred only** filters the
-   list. The **Timeline** tab lists the sequences exported from helmstudio's
-   timeline, and **Gallery** in the top bar browses every take this studio made.
+   list. The **Timeline** tab lists the sequences helmstudio holds for this
+   studio and the files exported from them, and **Gallery** in the top bar
+   browses every take this studio made.
 
 The terminal is helmstudio's `helm-terminal`, streaming the log of the
 session's latest render from helmstudio, which keeps it; a render of the session
@@ -230,9 +231,20 @@ once when the job fails, is stopped, or produced none.
 
 **Create Timeline** opens helmstudio's timeline: a sequence helmstudio keeps,
 edited in place — reorder, trim, dissolve, gain, undo — and exported by
-helmstudio. **New sequence** and **+** pick takes from the gallery. An export
-lands in the gallery and in the **Timeline** tab, and **Use video** pulls it
-back into inputs (e.g. to extend it).
+helmstudio. The editor lists the sequences this studio may read and opens one;
+**New sequence** and **+** pick takes from the gallery.
+
+The **Timeline** tab lists two different things under one word, and each row
+says which it is. A **sequence** is the edit itself, which helmstudio keeps:
+there is no file here, so clicking one opens the editor on it — an edit is a
+thing to open, the way a document is — and **Play** watches it as it stands,
+clip by clip, in the viewer a take plays in. Sound is each clip's own, and the
+cuts are as tight as swapping a source can be: a sequence that has to be heard
+as it was cut, or to be frame-exact, is an export. An **export** is a file in
+the gallery, rendered from a sequence, and behaves as a take does: it plays in
+the viewer, **Use video** pulls it back into inputs (e.g. to extend it), and it
+can be downloaded or deleted. Deleting an export leaves the sequence it came
+from on helmstudio's timeline.
 
 ## Where things are kept
 
@@ -248,7 +260,7 @@ settings files, nothing in the browser's storage.
 | Takes | written to helmstudio's stage directory, adopted into its asset store, and recorded in its gallery with the session, the settings, the prompt, the probe and the inputs |
 | Renders | helmstudio jobs of their session, with their progress and their logs, which the terminal streams; helmstudio can cancel one |
 | Live previews | helmstudio's stage directory, scratch |
-| Sequences | helmstudio's timeline; exports are gallery items |
+| Sequences | helmstudio's timeline, read back for the **Timeline** tab; exports are gallery items |
 | Folders from **Slice Clips** and **Preprocess Dataset** | the studio's data directory, where the next tool reads them by path: `outputs/<session id>/`; each file is adopted as an asset where it is (and so becomes read-only), and the folder is a record in the `folders` collection |
 | The page's preferences: side panel, terminal height, notifications | a kv document, `ui/preferences` |
 | The theme | helmstudio's own; the page follows it |
