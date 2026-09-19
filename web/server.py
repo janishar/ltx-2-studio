@@ -1605,7 +1605,11 @@ class Handler(BaseHTTPRequestHandler):
         if refusal is None:
             return False
         code, message = refusal
-        self._error(message, code)
+        # "message" as well as "error": a refusal on the /helm/ proxy is read by
+        # helmstudio's SDK, which takes "error" for a code and shows "message".
+        # With only "error" it has nothing to say and its caller falls back to
+        # "that change was not made".
+        self._json({"error": message, "message": message}, code)
         return True
 
     def _proxied(self) -> bool:
