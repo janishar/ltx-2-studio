@@ -98,6 +98,8 @@ function generateArgs(v, ctx) {
 
 function generateRequires(v, model, ctx = {}) {
   if ((v.pipeline || "distilled") !== "distilled" && !model.has_dev) return "This pipeline needs the dev transformer, which the model doesn't have.";
+  // An explicit Distilled LoRA file is the CLI's to find.
+  if (["two-stage", "two-stages-hq"].includes(v.pipeline) && !v.distilledLora && !model.has_distilled_lora) return LORA_MISSING("This pipeline");
   const keyframes = num(v.generatedKeyframes);
   if (keyframes !== null && keyframes !== 0) {
     if (!Number.isInteger(keyframes) || keyframes < 0) return "Generated keyframes must be a whole number (0 turns it off).";
@@ -122,6 +124,9 @@ function generateRequires(v, model, ctx = {}) {
 }
 
 const needsDev = (label) => (v, model) => (model.has_dev ? null : `${label} needs the dev transformer, which the model doesn't have.`);
+const LORA_MISSING = (label) => `${label} needs the distilled LoRA for stage 2, which the model doesn't have.`;
+// Dev tasks whose stage 2 fuses the distilled LoRA.
+const needsDevLora = (label) => (v, model) => needsDev(label)(v, model) || (model.has_distilled_lora ? null : LORA_MISSING(label));
 const needs23 = (label) => (v, model) => (model.is_25 ? `${label} runs on LTX-2.3 packs only (no official LTX-2.5 IC-LoRAs yet).` : null);
 const latent = (seconds, fps) => Math.max(0, Math.round((num(seconds) || 0) * fps / 8));
 
@@ -238,7 +243,7 @@ const LTX_TASKS = [
       { key: "cfg", label: "CFG scale", type: "number", step: 0.1, placeholder: "3.0", advanced: true },
       { key: "stg", label: "STG scale", type: "number", step: 0.1, placeholder: "0.0", advanced: true },
     ],
-    requires: needsDev("Audio → Video"),
+    requires: needsDevLora("Audio → Video"),
     build: (v) => {
       const args = ["--audio", { input: v.audio }];
       if (num(v.audioStart)) args.push("--audio-start", String(v.audioStart));
@@ -323,7 +328,7 @@ const LTX_TASKS = [
       { key: "distilledLora", label: "Distilled LoRA", type: "text", placeholder: "pack default", advanced: true },
       { key: "loraStrength", label: "Distilled LoRA strength", type: "number", step: 0.05, placeholder: "1.0", advanced: true },
     ],
-    requires: needsDev("Keyframe interpolation"),
+    requires: needsDevLora("Keyframe interpolation"),
     build: (v) => {
       const args = ["--start", { input: v.start }, "--end", { input: v.end }];
       opt(args, "--start-strength", v.startStrength);

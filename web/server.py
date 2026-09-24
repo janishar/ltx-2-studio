@@ -301,6 +301,12 @@ FAILURE_HINTS: list[tuple[re.Pattern[str], str]] = [
         "or point the model at a pack with transformer-dev.safetensors.",
     ),
     (
+        re.compile(r"Distilled LoRA not found"),
+        "Stage 2 of this pipeline needs the distilled LoRA, which the model directory doesn't have. Download "
+        "loras/ltx-2.5-22b-distilled-lora-450-bf16.safetensors from Lightricks/LTX-2.5 into it, or pick the "
+        "distilled or one-stage pipeline.",
+    ),
+    (
         re.compile(r"(?i)(ffmpeg|ffprobe) not found|ffmpeg.*(failed|error)"),
         "FFmpeg failed or wasn't found. Install it with `brew install ffmpeg` and restart the studio.",
     ),
@@ -592,6 +598,7 @@ class State:
             "exists": Path(self.model).expanduser().exists() or not info.local,
             "has_distilled": info.has_distilled,
             "has_dev": info.has_dev,
+            "has_distilled_lora": info.has_distilled_lora,
             "has_diffusion_decoder": info.has_diffusion_decoder,
             "is_25": info.is_25,
             "gemma": self.gemma or "",

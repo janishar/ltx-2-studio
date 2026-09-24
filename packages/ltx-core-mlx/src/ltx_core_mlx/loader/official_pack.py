@@ -69,6 +69,8 @@ OFFICIAL_FILENAMES: dict[str, str] = {
     "spatial_upscaler": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
     "temporal_upscaler": "ltx-2.5-latent-temporal-upscaler-x2-bf16-1.0.safetensors",
     "duration_head": "ltx-2.5-duration-head-bf16.safetensors",
+    # Stage 2 of the dev pipelines fuses it; linked into the pack as-is (no conversion).
+    "distilled_lora": "ltx-2.5-22b-distilled-lora-450-bf16.safetensors",
 }
 
 _REQUIRED_ROLES = ("text_encoder", "video_vae_conv", "audio_vae")
@@ -651,6 +653,10 @@ def build_virtual_pack(sources: OfficialSources, bits: int | None, cache_root: P
             }
         )
         _write_placeholder(staging / filename, entries, metadata, bits)
+
+    lora = sources.get("distilled_lora")
+    if lora is not None:
+        os.symlink(lora, staging / OFFICIAL_FILENAMES["distilled_lora"])
 
     (staging / "SOURCES.json").write_text(
         json.dumps({role: str(p) for role, p in sorted(sources.files.items())}, indent=2)
