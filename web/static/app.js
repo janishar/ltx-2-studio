@@ -948,6 +948,7 @@ function renderModelCaps(info) {
     ...row("type", null, info.local ? (info.is_25 ? "LTX-2.5" : "LTX-2.3 / other") : "Hugging Face repo (not inspected)"),
     ...row("distilled", info.has_distilled, info.has_distilled ? "yes" : "no"),
     ...row("dev", info.has_dev, info.has_dev ? "yes — two-stage, a2v, retake, extend, keyframe" : "no — dev-model tasks unavailable"),
+    ...row("distilled LoRA", info.has_distilled_lora, info.has_distilled_lora ? "yes" : "no — two-stage, hq, a2v, keyframe unavailable"),
     ...row("IC-LoRA", !info.is_25, info.is_25 ? "not on LTX-2.5 packs" : "available"),
   );
 }

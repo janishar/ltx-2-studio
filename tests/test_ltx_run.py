@@ -78,6 +78,19 @@ def test_inspect_official_and_pack(official_dir: Path, tmp_path: Path):
     assert (info.has_distilled, info.has_dev, info.is_25) == (True, True, False)
     assert ltx_run.mode_availability(info, "v2v") is None
 
+    # Dev without the distilled LoRA: stage 2 of two-stage, hq, a2v and keyframe can't run.
+    (official_dir / "diffusion_models" / ltx_run.OFFICIAL_DEV).write_bytes(b"")
+    info = ltx_run.inspect_model(str(official_dir))
+    assert info.has_dev and not info.has_distilled_lora
+    for mode, pipeline in (("t2v", "two-stage"), ("t2v", "hq"), ("a2v", "distilled"), ("keyframe", "distilled")):
+        assert "distilled LoRA" in ltx_run.mode_availability(info, mode, pipeline)
+    for mode, pipeline in (("t2v", "one-stage"), ("retake", "distilled"), ("extend", "distilled")):
+        assert ltx_run.mode_availability(info, mode, pipeline) is None
+    (official_dir / "loras").mkdir()
+    (official_dir / "loras" / ltx_run.OFFICIAL_DISTILLED_LORA).write_bytes(b"")
+    info = ltx_run.inspect_model(str(official_dir))
+    assert info.has_distilled_lora and ltx_run.mode_availability(info, "t2v", "two-stage") is None
+
     remote = ltx_run.inspect_model("some-org/some-repo")
     assert not remote.local and ltx_run.mode_availability(remote, "a2v") is None
 

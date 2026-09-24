@@ -309,6 +309,22 @@ def test_the_av_vae_is_optional(official_dir: Path, tmp_path: Path, monkeypatch:
     assert not (pack / "vae_decoder_av.safetensors").exists()
 
 
+def test_distilled_lora_is_linked_when_downloaded(official_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The official LoRA is consumed raw, so the pack links it rather than converting it."""
+    monkeypatch.setenv(op.QUANTIZE_ENV, "8")
+    monkeypatch.setenv(op.CACHE_ENV, str(tmp_path / "cache"))
+    name = op.OFFICIAL_FILENAMES["distilled_lora"]
+    op._resolve_cached.cache_clear()
+    assert not (op.resolve_official_model_dir(official_dir) / name).exists()
+
+    lora = official_dir / "loras" / name
+    lora.parent.mkdir()
+    _write_safetensors(lora, {"diffusion_model.transformer_blocks.0.attn1.to_q.lora_A.weight": _rand(4, 8)})
+    op._resolve_cached.cache_clear()
+    linked = op.resolve_official_model_dir(official_dir) / name
+    assert linked.is_symlink() and linked.resolve() == lora.resolve()
+
+
 _OFFICIAL_DIR = os.environ.get("LTX25_OFFICIAL_DIR")
 
 

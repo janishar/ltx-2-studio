@@ -20,6 +20,7 @@ MODEL_25 = {
     "has_distilled": True,
     "has_dev": True,
     "has_diffusion_decoder": True,
+    "has_distilled_lora": True,
 }
 MODEL_23 = {**MODEL_25, "is_25": False, "has_diffusion_decoder": False}
 MODEL_HF = {**MODEL_25, "local": False, "is_25": False}
@@ -144,3 +145,26 @@ def test_video_decoder_select_renders_its_hint() -> None:
     app = (Path(__file__).resolve().parents[1] / "web" / "static" / "app.js").read_text()
     select_case = app.split('case "select": {', 1)[1].split('case "check":', 1)[0]
     assert "field-hint" in select_case
+
+
+def test_distilled_lora_gates_stage_two_pipelines() -> None:
+    no_lora = {**MODEL_25, "has_distilled_lora": False}
+    cases = _node(
+        f"""const m = {json.dumps(no_lora)}, ok = {json.dumps(MODEL_25)};
+        const req = (id, v) => t.LTX_TASKS.find((x) => x.id === id).requires(v, m);
+        console.log(JSON.stringify({{
+          twoStage: t.generateRequires({{pipeline: "two-stage"}}, m),
+          hq: t.generateRequires({{pipeline: "two-stages-hq"}}, m),
+          explicit: t.generateRequires({{pipeline: "two-stage", distilledLora: "x.safetensors"}}, m),
+          oneStage: t.generateRequires({{pipeline: "one-stage"}}, m),
+          distilled: t.generateRequires({{pipeline: "distilled"}}, m),
+          withLora: t.generateRequires({{pipeline: "two-stage"}}, ok),
+          a2v: req("a2v", {{}}),
+          keyframe: req("keyframe", {{}}),
+          retake: req("retake", {{}}),
+        }}));"""
+    )
+    assert "distilled LoRA" in cases["twoStage"] and "distilled LoRA" in cases["hq"]
+    assert "distilled LoRA" in cases["a2v"] and "distilled LoRA" in cases["keyframe"]
+    for key in ("explicit", "oneStage", "distilled", "withLora", "retake"):
+        assert cases[key] is None, (key, cases[key])

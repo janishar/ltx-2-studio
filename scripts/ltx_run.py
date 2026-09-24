@@ -66,6 +66,8 @@ SIZE_PRESETS: dict[str, tuple[int, int]] = {
 
 OFFICIAL_DISTILLED = "ltx-2.5-22b-distilled-transformer-bf16.safetensors"
 OFFICIAL_DEV = "ltx-2.5-22b-dev-transformer-bf16.safetensors"
+#: Stage 2 of the dev pipelines (two-stage, hq, a2v, keyframe) fuses this LoRA.
+OFFICIAL_DISTILLED_LORA = "ltx-2.5-22b-distilled-lora-450-bf16.safetensors"
 #: The official AV video VAE, which carries the LTX-2.5 diffusion video decoder.
 OFFICIAL_VIDEO_VAE_AV = "ltx-2.5-video-vae-bf16.safetensors"
 
@@ -98,6 +100,9 @@ MODE_OPTION_DEFAULTS: dict[str, object] = {
 }
 
 DEV_MODES = {"a2v", "retake", "extend", "keyframe"}
+#: Dev modes and pipelines whose stage 2 fuses the distilled LoRA.
+DISTILLED_LORA_MODES = {"a2v", "keyframe"}
+DISTILLED_LORA_PIPELINES = {"two-stage", "hq"}
 IC_LORA_MODES = {"v2v", "hdr", "lipdub"}
 GENERATE_MODES = {"t2v", "i2v", "flf2v", "anchors", "story"}
 
@@ -119,9 +124,14 @@ class ModelInfo:
     #: The model carries the LTX-2.5 diffusion video decoder
     #: (``vae_decoder_av.safetensors``, or the official AV video VAE).
     has_diffusion_decoder: bool = False
+    #: The distilled LoRA stage 2 of the dev pipelines fuses.
+    has_distilled_lora: bool = True
 
     def missing_dev_reason(self) -> str:
         return "needs the dev transformer (not found in model)"
+
+    def missing_distilled_lora_reason(self) -> str:
+        return f"needs the distilled LoRA for stage 2 (expected {OFFICIAL_DISTILLED_LORA} or a *distilled-lora* file)"
 
     def missing_diffusion_decoder_reason(self) -> str:
         return (
@@ -154,6 +164,7 @@ def inspect_model(model: str) -> ModelInfo:
         n == "transformer.safetensors" or n.startswith("transformer-distilled") for n in names
     )
     has_dev = OFFICIAL_DEV in names or "transformer-dev.safetensors" in names
+    has_distilled_lora = any("distilled-lora" in n for n in names)
 
     is_25 = official
     config = path / "embedded_config.json"
@@ -168,6 +179,7 @@ def inspect_model(model: str) -> ModelInfo:
         has_dev=has_dev,
         is_25=is_25,
         has_diffusion_decoder=has_diffusion_decoder,
+        has_distilled_lora=has_distilled_lora,
     )
 
 
@@ -181,11 +193,15 @@ def mode_availability(
         _, needs_dev = GENERATE_PIPELINES[pipeline]
         if needs_dev and not info.has_dev:
             return f"--pipeline {pipeline} " + info.missing_dev_reason()
+        if pipeline in DISTILLED_LORA_PIPELINES and not info.has_distilled_lora:
+            return f"--pipeline {pipeline} " + info.missing_distilled_lora_reason()
         if not needs_dev and not info.has_distilled:
             return "needs the distilled transformer (not found in model)"
         return None
     if mode in DEV_MODES and not info.has_dev:
         return info.missing_dev_reason()
+    if mode in DISTILLED_LORA_MODES and not info.has_distilled_lora:
+        return info.missing_distilled_lora_reason()
     if mode in IC_LORA_MODES and info.is_25:
         return "IC-LoRA modes run on LTX-2.3 packs only in ltx-2-studio"
     return None
@@ -442,6 +458,8 @@ def cmd_modes(args: argparse.Namespace) -> int:
         print(f"  {'t2v':9s} {'--pipeline ' + pipeline:44s} {'ready' if reason is None else 'unavailable: ' + reason}")
     if info.local and not info.has_dev:
         print(f"\nDev-model modes need {OFFICIAL_DEV} (official) or transformer-dev.safetensors (mlx-forge pack).")
+    if info.local and info.has_dev and not info.has_distilled_lora:
+        print(f"two-stage, hq, a2v and keyframe also need {OFFICIAL_DISTILLED_LORA} (official loras/ folder).")
     if info.is_25:
         print("IC-LoRA modes (v2v, hdr, lipdub) need an LTX-2.3 pack plus the matching Lightricks IC-LoRA.")
     return 0
